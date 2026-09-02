@@ -153,7 +153,62 @@ North Africa, plus Abidjan and Accra.
 - **Framing:** "The buildings arrived; the services didn't."
 - **Chart:** map or ranked bar of unlit share 2025; two-colour split at 50 %.
 
-### 8. Tree cover under pressure (weak — needs more data)
+### 8. Growth corridors and the rise of intermediate cities (proposed — needs external data)
+
+Hypothesis: the secondary-city growth in Story 1 is not spread evenly — it
+concentrates along Africa's **development / trade corridors**. Corridor
+investment (upgraded highways, rail, dry ports, border posts, SEZs and
+agro-processing hubs) lowers the cost of being a mid-sized city *between* the
+big ones, so intermediate cities on a corridor should show faster built-up
+growth than off-corridor peers of the same size.
+
+Corridors that plausibly touch cities in the 100:
+
+- **Northern Corridor** — Mombasa–Nairobi–Kampala–Kigali (–eastern DRC / Juba)
+- **Central Corridor** — Dar es Salaam–Dodoma–Kigali / Bujumbura
+- **Addis–Djibouti** — Ethiopia's main trade artery (road + electrified rail)
+- **Abidjan–Lagos coastal corridor** — Abidjan, Accra, Lomé, Cotonou, Lagos
+- **Lagos–Ibadan–Kano** — Nigeria's internal spine
+- **Maputo Development Corridor** — Maputo–Pretoria/Johannesburg
+- **North–South Corridor** — Durban–Lusaka–Lubumbashi (Copperbelt)
+- **Lobito / Benguela** — Lobito–Huambo–(DRC/Zambia) rail revival
+- **Nacala** (Nampula/Nacala–Malawi–Zambia), **Beira** (Beira–Harare),
+  **Dakar–Bamako**, **Walvis Bay / Trans-Kalahari**
+
+**Candidate data:**
+
+- **Laurance et al. (2015), *Current Biology*** — "Estimating the environmental
+  costs of Africa's massive development corridors." Mapped 33 corridors
+  (existing / under construction / proposed) as GIS polylines across
+  sub-Saharan Africa; supplementary material has the shapefiles. The most
+  reusable ready-made layer.
+- **AUDA-NEPAD PIDA / Virtual PIDA Information Centre (VPIC)** — official AU
+  corridor and infrastructure-project geodata.
+- **OECD/SWAC** corridor + border-cities work (*Africa's Urbanisation
+  Dynamics 2020*) — narrative source, methodologically consistent with the
+  Africapolis boundaries already used here.
+- **Trans-African Highway network** (UNECA/AfDB/AU) — 9 defined routes; geometry
+  available via OSM relations.
+
+**Analysis design:**
+
+1. Load a corridor polyline layer; buffer at 25 km and 50 km (sensitivity).
+2. Tag each of the 100 agglomerations as on-corridor / off-corridor
+   (polygon-intersects-buffer).
+3. Compare distributions of Δ% built-up, sprawl share, density change and
+   unlit share, on vs off corridor.
+4. Control for the obvious confound — corridors connect big cities by
+   construction — by restricting the test to **secondary cities only** (drop
+   the primate city of each country) and conditioning on baseline built-up and
+   coastal/port status.
+5. Optional: distance-to-corridor as a continuous variable instead of a
+   binary.
+
+**Watch:** corridors are partly *endogenous* to growth (routes get upgraded
+because cities on them are already growing), so frame findings as association,
+not causal.
+
+### 9. Tree cover under pressure (weak — needs more data)
 
 Only **Uyo** (Nigeria, 70 % tree cover, +78 % growth) clears a "high canopy +
 fast growth" bar. The `p_tree_cov` field is sparse (many NA) and single-date
@@ -183,6 +238,10 @@ time-varying canopy layer is added.
       weight the lit/unlit numbers can carry.
 - [ ] Once GHS-POP lands: add per-capita built-up and population-growth
       columns — turns several of these stories from "land" to "land per person".
+- [ ] Growth corridors (Story 8): pick a corridor layer (Laurance 2015 is the
+      quickest), add `data/raw/corridors/`, write a small `scripts/` step to
+      tag the 100 agglomerations on/off corridor, then test the secondary-city
+      link.
 - [ ] Decide the doc's format: extend this markdown, or promote to a
       scrollytelling Artifact with the charts inline.
 
@@ -191,3 +250,5 @@ time-varying canopy layer is added.
 - GHSL BUILT-S R2023 — European Commission JRC.
 - Africapolis 2020 — OECD/SWAC (agglomeration boundaries, population, tree cover).
 - Nighttime lights — harmonised DMSP-OLS + VIIRS (sat-io), 2000–2024.
+- Development corridors (proposed) — Laurance et al. (2015), *Current Biology*
+  33(20); AUDA-NEPAD PIDA / VPIC; OECD/SWAC urbanisation-corridor work.
