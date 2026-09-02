@@ -1,0 +1,36 @@
+# ---- Data (large, reproducible from source downloads — see CLAUDE.md) --------
+/data/
+
+# ---- Generated outputs -----------------------------------------------------
+/output/
+Rplots.pdf
+Rplot.jpeg
+
+# ---- App: deploy bundle ---------------------------------------------------
+# Keep the small summary .Rds tracked (they let the app run without the 100 GB
+# pipeline); never track the per-city raster tree behind this symlink.
+/app/data/cities
+
+# Posit Connect deploy metadata (ties the repo to one account/target).
+/app/rsconnect/
+
+# ---- R / RStudio ---------------------------------------------------------
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*_cache/
+*.utf8.md
+*.knit.md
+
+# ---- Claude Code -------------------------------------------------------
+.claude/settings.local.json
+
+# ---- Local secrets / machine config ----------------------------------
+.Renviron
+.env
+
+# ---- OS / editor ----------------------------------------------------
+.DS_Store
+Thumbs.db
+*~

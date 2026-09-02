@@ -1,0 +1,10 @@
+# Normalise line endings: LF in the repo, native on checkout.
+* text=auto eol=lf
+
+# Binary blobs — never diff or convert.
+*.Rds  binary
+*.tif  binary
+*.png  binary
+*.jpeg binary
+*.pdf  binary
+*.gpkg binary
