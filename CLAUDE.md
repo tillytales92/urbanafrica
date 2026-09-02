@@ -145,20 +145,24 @@ Run order once the raw data is in place:
 `0_popprep.R` → `1_extract_pop.R` → re-run `1_create_citydata.R` → `1_create_cityindex.R`
 → `2_1_plots.R` / `2_4_sprawl_metrics.R` → copy `.Rds` to `app/data/`.
 
-### Footprint-over-time visualisation
+### Year-animation slider
 
-Add a "footprint over time" view to the Urban Growth tab, alongside the current
-single-year / period-change modes. Neither piece needs new source data — both use the
-per-city `{res,nres,total}_wgs84.tif` stacks (bands already named by year).
+**Abandoned on the Urban Growth tab.** Animating 5-yearly built-up stock (or growth
+rings / two-tone variants) is not visually compelling for established metros — several
+renderings were tried and reverted. The Urban Growth map is back to the deployed
+`selectInput` version.
 
-| Piece | Status | Notes |
-|---|---|---|
-| "Single year" mode with play slider (`app/app.R`) | **done (needs live-session testing)** | `yr_single` is an animated `sliderInput` (2000–2025, step 5, interval 3000 ms). Single mode shows the plain per-epoch built-up **stock** (res + nres, sqrt scale, fixed legend) — the epoch-ramp and two-tone variants were tried and dropped. `output$map` renders a bare shell once; observers push via `leafletProxy` — city (view + outline + info box), layers/legend (mode-keyed), raster (per step) — plus a large year badge bottom-right. "Period change" mode unchanged. Frame-to-frame change is inherently subtle for established metros (stock, not growth); accepted for now. |
-| Precompute `first_built_epoch_wgs84.tif` (`1_create_citydata.R`) | **todo, optional** | Move the on-the-fly `first_built()` computation into a per-city raster for speed; build it in the same 100-city re-run as the GHS-POP pop block. Only worth it if the live computation proves slow. |
+**Done on the Nighttime Lights tab** (`app/app.R`, needs live-session testing) — where
+year-on-year change is genuinely visible. `ntl_epoch` is now an animated `sliderInput`
+(2000–2024, step 1, interval 800 ms). `output$ntl_map` renders a bare shell once
+(`outputOptions(suspendWhenHidden = FALSE)` so proxy updates survive the tab being
+hidden); three observers push via `leafletProxy` — city (view + outline + info box),
+raster (per slider step, + year badge), legend/layers-control (layer-keyed). NTL
+intensity animates annually; the lit/unlit layer snaps each slider year to the nearest
+5-year epoch (only 6 `lit_unlit` bands exist). No new source data.
 
-Later, optional: a "Download animation" button that renders a GIF (`ggplot` + `gifski`
-over the six bands) on demand for the selected city — for paper figures / sharing, not
-interactive use.
+Later, optional: extend the annual range once VIIRS 2025 is available; a "Download
+animation" GIF-export button.
 
 ## Conventions
 

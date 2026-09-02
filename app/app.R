@@ -328,12 +328,9 @@ map_sidebar <- sidebar(
                inline   = TRUE),
   conditionalPanel(
     condition = "input.map_mode == 'single'",
-    sliderInput("yr_single", "Year",
-                min = 2000, max = 2025, value = 2025, step = 5,
-                sep = "", ticks = TRUE,
-                animate = animationOptions(interval = 3000, loop = TRUE)),
-    helpText("Built-up footprint for each epoch. Press play to step ",
-             "through 2000, 2005, …, 2025.")
+    selectInput("yr_single", "Year",
+                choices  = epochs,
+                selected = 2025)
   ),
   conditionalPanel(
     condition = "input.map_mode == 'change'",
@@ -398,10 +395,12 @@ ntl_sidebar <- sidebar(
   radioButtons("ntl_layer", "Layer",
                choices  = c("NTL intensity" = "ntl", "Lit / unlit built-up" = "lu"),
                selected = "ntl"),
-  selectInput("ntl_epoch", "Epoch",
-              choices  = epochs,
-              selected = 2025),
-  helpText("NTL: 2025 uses 2024 data (most recent available).")
+  sliderInput("ntl_epoch", "Year",
+              min = 2000, max = 2024, value = 2024, step = 1,
+              sep = "", ticks = FALSE,
+              animate = animationOptions(interval = 800, loop = TRUE)),
+  helpText("Press play to sweep 2000 → 2024. NTL intensity is annual; ",
+           "lit/unlit snaps to the nearest 5-year epoch (2025 uses 2024 data).")
 )
 
 ui <- page_navbar(
@@ -730,22 +729,47 @@ server <- function(input, output, session) {
     city_index |> dplyr::filter(slug == input$city)
   })
 
-  # The map is rendered once as a bare shell. Everything that changes with the
-  # city, the display mode, or the year slider is pushed via leafletProxy, so
-  # stepping / animating the year never reloads basemap tiles or resets the view.
   output$map <- renderLeaflet({
-    leaflet() |>
-      addTiles(group = "OpenStreetMap") |>
-      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
-      hideGroup("OpenStreetMap") |>
-      setView(lng = 20, lat = 3, zoom = 3)
-  })
-
-  # City shell — view + metro outline + info box. Fires on city change only.
-  observe({
     a  <- assets(); req(a)
-    bb <- city_bb(); req(nrow(bb) == 1)
+    bb <- city_bb()
     tree_cov <- bb$p_tree_cov
+
+    if (input$map_mode == "single") {
+      yr <- as.character(input$yr_single)
+      r_res      <- a$res_stack[[yr]]
+      r_nres     <- a$nres_stack[[yr]]
+      title_res  <- sprintf("Residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr)
+      title_nres <- sprintf("Non-residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr)
+      layer_res  <- "Residential built-up"
+      layer_nres <- "Non-residential built-up"
+      p_res  <- pal_res_abs
+      p_nres <- pal_nres_abs
+      upper  <- UPPER_ABS
+      brks   <- legend_brks_abs
+    } else {
+      y0 <- as.character(input$yr_start)
+      y1 <- as.character(input$yr_end)
+      yr_label <- sprintf("%s&rarr;%s", y0, y1)
+      if (input$margin == "extensive") {
+        r_res  <- terra::ifel(
+          a$res_stack[[y0]]  == 0 & a$res_stack[[y1]]  > 0, a$res_stack[[y1]],  NA)
+        r_nres <- terra::ifel(
+          a$nres_stack[[y0]] == 0 & a$nres_stack[[y1]] > 0, a$nres_stack[[y1]], NA)
+        title_res  <- sprintf("New residential<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr_label)
+        title_nres <- sprintf("New non-residential<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr_label)
+      } else {
+        r_res  <- a$res_stack[[y1]]  - a$res_stack[[y0]]
+        r_nres <- a$nres_stack[[y1]] - a$nres_stack[[y0]]
+        title_res  <- sprintf("Residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr_label)
+        title_nres <- sprintf("Non-residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr_label)
+      }
+      layer_res  <- "Residential change"
+      layer_nres <- "Non-residential change"
+      p_res  <- pal_res
+      p_nres <- pal_nres
+      upper  <- UPPER
+      brks   <- legend_brks
+    }
 
     info_html <- city_info_html(
       name           = bb$agglosname,
@@ -761,10 +785,17 @@ server <- function(input, output, session) {
       density_change = bb$density_change
     )
 
-    leafletProxy("map") |>
-      clearGroup("Metro outline") |>
-      removeControl("info_box") |>
+    leaflet() |>
+      addTiles(group = "OpenStreetMap") |>
+      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
       fitBounds(bb$xmin, bb$ymin, bb$xmax, bb$ymax) |>
+      hideGroup("OpenStreetMap") |>
+      addRasterImage(sqrt_capped(r_res,  upper = upper), colors = p_res,
+                     opacity = 0.85, maxBytes = Inf,
+                     group = layer_res) |>
+      addRasterImage(sqrt_capped(r_nres, upper = upper), colors = p_nres,
+                     opacity = 0.85, maxBytes = Inf,
+                     group = layer_nres) |>
       addPolygons(
         data        = a$metro,
         fillColor   = pal_tree(ifelse(is.na(tree_cov), 0, tree_cov)),
@@ -773,110 +804,20 @@ server <- function(input, output, session) {
         group = "Metro outline",
         popup = as.character(info_html)
       ) |>
-      addControl(html = info_html, position = "topright", layerId = "info_box")
-  })
-
-  # Raster layers for the current mode / year(s), recomputed on every slider
-  # step. Single mode = the built-up stock for that epoch; change mode = the
-  # intensive/extensive difference between two epochs. Colour scale is fixed
-  # (see the separate legend observer) so frames stay comparable.
-  map_layers <- reactive({
-    a <- assets(); req(a)
-
-    if (input$map_mode == "single") {
-      req(input$yr_single)
-      yr <- as.character(as.integer(input$yr_single))
-      list(r_res  = a$res_stack[[yr]], r_nres = a$nres_stack[[yr]],
-           p_res  = pal_res_abs, p_nres = pal_nres_abs, upper = UPPER_ABS,
-           badge  = yr)
-    } else {
-      req(input$yr_start, input$yr_end, input$margin)
-      y0 <- as.character(input$yr_start)
-      y1 <- as.character(input$yr_end)
-      if (input$margin == "extensive") {
-        r_res  <- terra::ifel(
-          a$res_stack[[y0]]  == 0 & a$res_stack[[y1]]  > 0, a$res_stack[[y1]],  NA)
-        r_nres <- terra::ifel(
-          a$nres_stack[[y0]] == 0 & a$nres_stack[[y1]] > 0, a$nres_stack[[y1]], NA)
-      } else {
-        r_res  <- a$res_stack[[y1]]  - a$res_stack[[y0]]
-        r_nres <- a$nres_stack[[y1]] - a$nres_stack[[y0]]
-      }
-      list(r_res = r_res, r_nres = r_nres,
-           p_res = pal_res, p_nres = pal_nres, upper = UPPER, badge = NULL)
-    }
-  })
-
-  observe({
-    ml <- map_layers(); req(ml)
-    leafletProxy("map") |>
-      clearGroup("Residential") |>
-      clearGroup("Non-residential") |>
-      removeControl("year_badge") |>
-      addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
-                     opacity = 0.85, maxBytes = Inf, group = "Residential") |>
-      addRasterImage(sqrt_capped(ml$r_nres, upper = ml$upper), colors = ml$p_nres,
-                     opacity = 0.85, maxBytes = Inf, group = "Non-residential")
-
-    if (!is.null(ml$badge)) {
-      leafletProxy("map") |>
-        addControl(
-          html = sprintf(
-            paste0("<div style=\"font:700 30px/1 -apple-system,system-ui,sans-serif;",
-                   "color:#1a1a1a;background:rgba(255,255,255,0.78);padding:3px 12px;",
-                   "border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3)\">%s</div>"),
-            ml$badge),
-          position = "bottomright", layerId = "year_badge")
-    }
-  })
-
-  # Legend + layers control — depend on mode (and, for change mode, margin /
-  # period) only, so they do not redraw during animation.
-  observe({
-    req(input$map_mode)
-    p <- leafletProxy("map") |>
-      removeControl("leg_res") |>
-      removeControl("leg_nres")
-
-    if (input$map_mode == "single") {
-      p |>
-        addLayersControl(
-          baseGroups    = c("Satellite", "OpenStreetMap"),
-          overlayGroups = c("Residential", "Non-residential", "Metro outline"),
-          options       = layersControlOptions(collapsed = FALSE)) |>
-        addLegend(layerId  = "leg_res",
-                  colors   = pal_res_abs(sqrt(legend_brks_abs)),
-                  labels   = format(legend_brks_abs, big.mark = ","),
-                  title    = "Residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>",
-                  position = "bottomleft") |>
-        addLegend(layerId  = "leg_nres",
-                  colors   = pal_nres_abs(sqrt(legend_brks_abs)),
-                  labels   = format(legend_brks_abs, big.mark = ","),
-                  title    = "Non-residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>",
-                  position = "bottomleft")
-    } else {
-      req(input$yr_start, input$yr_end, input$margin)
-      lab <- sprintf("%s&rarr;%s", input$yr_start, input$yr_end)
-      pre <- if (input$margin == "extensive")
-               c("New residential", "New non-residential")
-             else
-               c("Residential &Delta;", "Non-residential &Delta;")
-      p |>
-        addLayersControl(
-          baseGroups    = c("Satellite", "OpenStreetMap"),
-          overlayGroups = c("Residential", "Non-residential", "Metro outline"),
-          options       = layersControlOptions(collapsed = FALSE)) |>
-        addLegend(layerId  = "leg_res",
-                  colors   = pal_res(sqrt(legend_brks)),
-                  labels   = format(legend_brks, big.mark = ","),
-                  title    = sprintf("%s<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", pre[1], lab),
-                  position = "bottomleft") |>
-        addLegend(layerId  = "leg_nres",
-                  colors   = pal_nres(sqrt(legend_brks)),
-                  labels   = format(legend_brks, big.mark = ","),
-                  title    = sprintf("%s<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", pre[2], lab),
-                  position = "bottomleft")
-    }
+      addLayersControl(
+        baseGroups    = c("Satellite", "OpenStreetMap"),
+        overlayGroups = c(layer_res, layer_nres, "Metro outline"),
+        options       = layersControlOptions(collapsed = FALSE)
+      ) |>
+      addLegend(colors   = p_res(sqrt(brks)),
+                labels   = format(brks, big.mark = ","),
+                title    = title_res,
+                position = "bottomleft") |>
+      addLegend(colors   = p_nres(sqrt(brks)),
+                labels   = format(brks, big.mark = ","),
+                title    = title_nres,
+                position = "bottomleft") |>
+      addControl(html = info_html, position = "topright")
   })
 
   # --- Nighttime Lights tab -------------------------------------------------
@@ -896,13 +837,23 @@ server <- function(input, output, session) {
     city_index |> dplyr::filter(slug == input$ntl_city)
   })
 
+  # Bare shell, rendered once. City / layer / year updates go through
+  # leafletProxy so the year animation never reloads basemap tiles.
   output$ntl_map <- renderLeaflet({
-    a  <- ntl_assets(); req(a)
-    bb <- ntl_city_bb()
+    leaflet() |>
+      addTiles(group = "OpenStreetMap") |>
+      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+      hideGroup("OpenStreetMap") |>
+      setView(lng = 20, lat = 3, zoom = 3)
+  })
+  # Keep the map alive while the NTL tab is hidden, so proxy updates from the
+  # observers below are not dropped before the user opens the tab.
+  outputOptions(output, "ntl_map", suspendWhenHidden = FALSE)
 
-    ep     <- as.character(input$ntl_epoch)
-    ntl_yr <- if (ep == "2025") "2024" else ep
-    layer  <- input$ntl_layer   # "ntl" or "lu"
+  # City shell — view + metro outline + info box. Fires on city change only.
+  observe({
+    a  <- ntl_assets(); req(a)
+    bb <- ntl_city_bb(); req(nrow(bb) == 1)
 
     info_html <- as.character(ntl_info_html(
       name        = bb$agglosname,
@@ -912,42 +863,10 @@ server <- function(input, output, session) {
       unlit_2025  = bb$unlit_share_2025
     ))
 
-    m <- leaflet() |>
-      addTiles(group = "OpenStreetMap") |>
-      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+    leafletProxy("ntl_map") |>
+      clearGroup("Metro outline") |>
+      removeControl("ntl_info") |>
       fitBounds(bb$xmin, bb$ymin, bb$xmax, bb$ymax) |>
-      hideGroup("OpenStreetMap")
-
-    if (layer == "ntl") {
-      r_ntl <- raster::raster(a$ntl_stack[[ntl_yr]])
-      ntl_v <- raster::values(r_ntl)
-      ntl_v[ntl_v <= 0] <- NA
-      ntl_v <- log1p(pmin(ntl_v, NTL_UPPER))   # log1p transform for visual spread
-      r_ntl <- raster::setValues(r_ntl, ntl_v)
-      ntl_label <- if (ep == "2025")
-        sprintf("NTL intensity<br>(nW/cm&sup2;/sr, 2024 proxy)<br><em>log scale, capped at %d</em>", NTL_UPPER)
-      else
-        sprintf("NTL intensity<br>(nW/cm&sup2;/sr, %s)<br><em>log scale, capped at %d</em>", ep, NTL_UPPER)
-      m <- m |>
-        addRasterImage(r_ntl, colors = pal_ntl, opacity = 0.8, maxBytes = Inf) |>
-        addLegend(colors   = pal_ntl(log1p(NTL_BREAKS)),
-                  labels   = NTL_LABELS,
-                  title    = ntl_label,
-                  position = "bottomleft")
-    } else {
-      r_lu <- raster::raster(a$lu_stack[[ep]])
-      lu_v <- raster::values(r_lu)
-      lu_v[lu_v == 0] <- NA
-      r_lu <- raster::setValues(r_lu, lu_v)
-      m <- m |>
-        addRasterImage(r_lu, colors = pal_lu, opacity = 0.75, maxBytes = Inf) |>
-        addLegend(colors   = c("#e34a33", "#fee391"),
-                  labels   = c("Built — unlit", "Built — lit"),
-                  title    = sprintf("Built-up type, %s", ep),
-                  position = "bottomleft")
-    }
-
-    m |>
       addPolygons(
         data        = a$metro,
         fillOpacity = 0,
@@ -955,12 +874,71 @@ server <- function(input, output, session) {
         group = "Metro outline",
         popup = info_html
       ) |>
+      addControl(html = info_html, position = "topright", layerId = "ntl_info")
+  })
+
+  # Raster for the current layer + year. Fires on every slider step.
+  observe({
+    a <- ntl_assets(); req(a)
+    req(input$ntl_epoch, input$ntl_layer)
+    yr_req <- as.integer(input$ntl_epoch)
+
+    p <- leafletProxy("ntl_map") |>
+      clearGroup("NTL") |>
+      removeControl("ntl_badge")
+
+    if (input$ntl_layer == "ntl") {
+      avail <- as.integer(names(a$ntl_stack))
+      yr    <- max(min(yr_req, max(avail)), min(avail))
+      r <- raster::raster(a$ntl_stack[[as.character(yr)]])
+      v <- raster::values(r); v[v <= 0] <- NA
+      r <- raster::setValues(r, log1p(pmin(v, NTL_UPPER)))
+      p |> addRasterImage(r, colors = pal_ntl, opacity = 0.8,
+                          maxBytes = Inf, group = "NTL")
+      badge <- as.character(yr)
+    } else {
+      ep <- epochs[which.min(abs(epochs - yr_req))]     # nearest 5-year epoch
+      r  <- raster::raster(a$lu_stack[[as.character(ep)]])
+      v  <- raster::values(r); v[v == 0] <- NA
+      r  <- raster::setValues(r, v)
+      p |> addRasterImage(r, colors = pal_lu, opacity = 0.75,
+                          maxBytes = Inf, group = "NTL")
+      badge <- if (ep == 2025) "2025 · 2024 data" else as.character(ep)
+    }
+
+    leafletProxy("ntl_map") |>
+      addControl(
+        html = sprintf(
+          paste0("<div style=\"font:700 30px/1 -apple-system,system-ui,sans-serif;",
+                 "color:#1a1a1a;background:rgba(255,255,255,0.78);padding:3px 12px;",
+                 "border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3)\">%s</div>"),
+          badge),
+        position = "bottomright", layerId = "ntl_badge")
+  })
+
+  # Legend + layers control — depend on the layer choice only.
+  observe({
+    req(input$ntl_layer)
+    p <- leafletProxy("ntl_map") |>
+      removeControl("ntl_legend") |>
       addLayersControl(
         baseGroups    = c("Satellite", "OpenStreetMap"),
-        overlayGroups = "Metro outline",
-        options       = layersControlOptions(collapsed = FALSE)
-      ) |>
-      addControl(html = info_html, position = "topright")
+        overlayGroups = c("NTL", "Metro outline"),
+        options       = layersControlOptions(collapsed = FALSE))
+
+    if (input$ntl_layer == "ntl") {
+      p |> addLegend(layerId  = "ntl_legend",
+                     colors   = pal_ntl(log1p(NTL_BREAKS)),
+                     labels   = NTL_LABELS,
+                     title    = sprintf("NTL intensity<br>(nW/cm&sup2;/sr)<br><em>log, cap %d</em>", NTL_UPPER),
+                     position = "bottomleft")
+    } else {
+      p |> addLegend(layerId  = "ntl_legend",
+                     colors   = c("#e34a33", "#fee391"),
+                     labels   = c("Built — unlit", "Built — lit"),
+                     title    = "Built-up type",
+                     position = "bottomleft")
+    }
   })
 
   # --- Time-series tab ------------------------------------------------------
