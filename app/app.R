@@ -396,11 +396,11 @@ ntl_sidebar <- sidebar(
                choices  = c("NTL intensity" = "ntl", "Lit / unlit built-up" = "lu"),
                selected = "ntl"),
   sliderInput("ntl_epoch", "Year",
-              min = 2000, max = 2024, value = 2024, step = 1,
-              sep = "", ticks = FALSE,
-              animate = animationOptions(interval = 800, loop = TRUE)),
-  helpText("Press play to sweep 2000 → 2024. NTL intensity is annual; ",
-           "lit/unlit snaps to the nearest 5-year epoch (2025 uses 2024 data).")
+              min = 2000, max = 2025, value = 2025, step = 5,
+              sep = "", ticks = TRUE,
+              animate = animationOptions(interval = 2500, loop = TRUE)),
+  helpText("Press play to step through 2000, 2005, …, 2025. ",
+           "NTL for 2025 uses 2024 data (most recent available).")
 )
 
 ui <- page_navbar(
@@ -877,33 +877,34 @@ server <- function(input, output, session) {
       addControl(html = info_html, position = "topright", layerId = "ntl_info")
   })
 
-  # Raster for the current layer + year. Fires on every slider step.
+  # Raster for the current layer + year. Fires once per slider step (6 epochs).
   observe({
     a <- ntl_assets(); req(a)
     req(input$ntl_epoch, input$ntl_layer)
-    yr_req <- as.integer(input$ntl_epoch)
+    yr <- as.integer(input$ntl_epoch)                  # one of 2000..2025 step 5
 
     p <- leafletProxy("ntl_map") |>
       clearGroup("NTL") |>
       removeControl("ntl_badge")
 
     if (input$ntl_layer == "ntl") {
-      avail <- as.integer(names(a$ntl_stack))
-      yr    <- max(min(yr_req, max(avail)), min(avail))
-      r <- raster::raster(a$ntl_stack[[as.character(yr)]])
+      avail  <- as.integer(names(a$ntl_stack))         # annual 2000..2024
+      ntl_yr <- min(if (yr >= 2025) 2024L else yr, max(avail))
+      r <- raster::raster(a$ntl_stack[[as.character(ntl_yr)]])
       v <- raster::values(r); v[v <= 0] <- NA
       r <- raster::setValues(r, log1p(pmin(v, NTL_UPPER)))
       p |> addRasterImage(r, colors = pal_ntl, opacity = 0.8,
                           maxBytes = Inf, group = "NTL")
-      badge <- as.character(yr)
+      badge <- if (yr >= 2025) "2025 · 2024 data" else as.character(yr)
     } else {
-      ep <- epochs[which.min(abs(epochs - yr_req))]     # nearest 5-year epoch
-      r  <- raster::raster(a$lu_stack[[as.character(ep)]])
+      ep <- as.character(yr)                           # lu_stack has 2000..2025
+      if (!(ep %in% names(a$lu_stack))) ep <- tail(names(a$lu_stack), 1)
+      r  <- raster::raster(a$lu_stack[[ep]])
       v  <- raster::values(r); v[v == 0] <- NA
       r  <- raster::setValues(r, v)
       p |> addRasterImage(r, colors = pal_lu, opacity = 0.75,
                           maxBytes = Inf, group = "NTL")
-      badge <- if (ep == 2025) "2025 · 2024 data" else as.character(ep)
+      badge <- ep
     }
 
     leafletProxy("ntl_map") |>
