@@ -331,7 +331,7 @@ map_sidebar <- sidebar(
     sliderInput("yr_single", "Year",
                 min = 2000, max = 2025, value = 2025, step = 5,
                 sep = "", ticks = TRUE,
-                animate = animationOptions(interval = 1200, loop = TRUE)),
+                animate = animationOptions(interval = 2000, loop = TRUE)),
     helpText("Press play to sweep 2000 → 2025.")
   ),
   conditionalPanel(
@@ -780,45 +780,34 @@ server <- function(input, output, session) {
       addControl(html = info_html, position = "topright", layerId = "info_box")
   })
 
-  # Raster layers + legends for the current mode / year(s).
-  # Recomputed on every slider step; pushed to the live map via proxy.
+  # Rasters only — recomputed on every slider step. The colour scale is FIXED
+  # (same breaks every frame) so frames stay visually comparable; the legend is
+  # therefore handled by a separate observer that fires only on mode changes.
   map_layers <- reactive({
     a <- assets(); req(a)
 
     if (input$map_mode == "single") {
       req(input$yr_single)
       yr <- as.character(as.integer(input$yr_single))
-      list(
-        r_res  = a$res_stack[[yr]],  r_nres = a$nres_stack[[yr]],
-        p_res  = pal_res_abs,        p_nres = pal_nres_abs,
-        upper  = UPPER_ABS,          brks   = legend_brks_abs,
-        title_res  = sprintf("Residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr),
-        title_nres = sprintf("Non-residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr)
-      )
+      list(r_res = a$res_stack[[yr]], r_nres = a$nres_stack[[yr]],
+           p_res = pal_res_abs, p_nres = pal_nres_abs,
+           upper = UPPER_ABS, badge = yr)
     } else {
       req(input$yr_start, input$yr_end, input$margin)
       y0 <- as.character(input$yr_start)
       y1 <- as.character(input$yr_end)
-      yr_label <- sprintf("%s&rarr;%s", y0, y1)
       if (input$margin == "extensive") {
         r_res  <- terra::ifel(
           a$res_stack[[y0]]  == 0 & a$res_stack[[y1]]  > 0, a$res_stack[[y1]],  NA)
         r_nres <- terra::ifel(
           a$nres_stack[[y0]] == 0 & a$nres_stack[[y1]] > 0, a$nres_stack[[y1]], NA)
-        title_res  <- sprintf("New residential<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr_label)
-        title_nres <- sprintf("New non-residential<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr_label)
       } else {
         r_res  <- a$res_stack[[y1]]  - a$res_stack[[y0]]
         r_nres <- a$nres_stack[[y1]] - a$nres_stack[[y0]]
-        title_res  <- sprintf("Residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr_label)
-        title_nres <- sprintf("Non-residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr_label)
       }
-      list(
-        r_res = r_res,      r_nres = r_nres,
-        p_res = pal_res,    p_nres = pal_nres,
-        upper = UPPER,      brks   = legend_brks,
-        title_res = title_res, title_nres = title_nres
-      )
+      list(r_res = r_res, r_nres = r_nres,
+           p_res = pal_res, p_nres = pal_nres,
+           upper = UPPER, badge = NULL)
     }
   })
 
@@ -827,18 +816,55 @@ server <- function(input, output, session) {
     leafletProxy("map") |>
       clearGroup("Residential") |>
       clearGroup("Non-residential") |>
-      removeControl("leg_res") |>
-      removeControl("leg_nres") |>
+      removeControl("year_badge") |>
       addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
                      opacity = 0.85, maxBytes = Inf, group = "Residential") |>
       addRasterImage(sqrt_capped(ml$r_nres, upper = ml$upper), colors = ml$p_nres,
-                     opacity = 0.85, maxBytes = Inf, group = "Non-residential") |>
-      addLegend(layerId = "leg_res", colors = ml$p_res(sqrt(ml$brks)),
-                labels = format(ml$brks, big.mark = ","),
-                title = ml$title_res, position = "bottomleft") |>
-      addLegend(layerId = "leg_nres", colors = ml$p_nres(sqrt(ml$brks)),
-                labels = format(ml$brks, big.mark = ","),
-                title = ml$title_nres, position = "bottomleft")
+                     opacity = 0.85, maxBytes = Inf, group = "Non-residential")
+
+    if (!is.null(ml$badge)) {
+      leafletProxy("map") |>
+        addControl(
+          html = sprintf(
+            paste0("<div style=\"font:700 30px/1 -apple-system,system-ui,sans-serif;",
+                   "color:#1a1a1a;background:rgba(255,255,255,0.78);padding:3px 12px;",
+                   "border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3)\">%s</div>"),
+            ml$badge),
+          position = "bottomright", layerId = "year_badge")
+    }
+  })
+
+  # Legends — depend on mode / margin / period only, not on the year slider,
+  # so they do not flicker during animation.
+  legend_spec <- reactive({
+    if (input$map_mode == "single") {
+      list(p_res = pal_res_abs, p_nres = pal_nres_abs, brks = legend_brks_abs,
+           title_res  = "Residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>",
+           title_nres = "Non-residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>")
+    } else {
+      req(input$yr_start, input$yr_end, input$margin)
+      lab <- sprintf("%s&rarr;%s", input$yr_start, input$yr_end)
+      pre <- if (input$margin == "extensive")
+               c("New residential", "New non-residential")
+             else
+               c("Residential &Delta;", "Non-residential &Delta;")
+      list(p_res = pal_res, p_nres = pal_nres, brks = legend_brks,
+           title_res  = sprintf("%s<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", pre[1], lab),
+           title_nres = sprintf("%s<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", pre[2], lab))
+    }
+  })
+
+  observe({
+    ls <- legend_spec(); req(ls)
+    leafletProxy("map") |>
+      removeControl("leg_res") |>
+      removeControl("leg_nres") |>
+      addLegend(layerId = "leg_res", colors = ls$p_res(sqrt(ls$brks)),
+                labels = format(ls$brks, big.mark = ","),
+                title = ls$title_res, position = "bottomleft") |>
+      addLegend(layerId = "leg_nres", colors = ls$p_nres(sqrt(ls$brks)),
+                labels = format(ls$brks, big.mark = ","),
+                title = ls$title_nres, position = "bottomleft")
   })
 
   # --- Nighttime Lights tab -------------------------------------------------
