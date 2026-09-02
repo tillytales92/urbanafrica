@@ -144,14 +144,6 @@ pal_res_abs  <- colorNumeric("YlOrRd",  domain = c(0, sqrt(UPPER_ABS)), na.color
 pal_nres_abs <- colorNumeric("viridis", domain = c(0, sqrt(UPPER_ABS)), na.color = "transparent")
 pal_tree     <- colorNumeric("Greens",  domain = c(0, 100),             na.color = "#cccccc")
 
-# "Footprint growth" mode (the animated single-year view). For the selected
-# epoch, each built-up pixel is drawn two-tone: pale = built in an earlier
-# epoch, bright = first built in THIS epoch. The bright "growth ring" lands on
-# different pixels every frame, so the change between frames is obvious.
-# Residential and non-residential are separate toggleable layers.
-pal_foot_res  <- colorFactor(c("#f0b8b0", "#c1272d"), levels = c(1, 2), na.color = "transparent")
-pal_foot_nres <- colorFactor(c("#aecbe8", "#1f5fa8"), levels = c(1, 2), na.color = "transparent")
-
 # NTL & lit/unlit palettes
 # Breaks anchored at the lit/unlit threshold (0.5); steps match the African
 # city distribution: median ~6.5, p75 ~17, p90 ~33, p99 ~71 nW/cm²/sr (2024).
@@ -331,18 +323,17 @@ map_sidebar <- sidebar(
               selected = default_city),
   hr(),
   radioButtons("map_mode", "Display mode",
-               choices  = c("Footprint growth" = "single", "Period change" = "change"),
+               choices  = c("Single year" = "single", "Period change" = "change"),
                selected = "change",
                inline   = TRUE),
   conditionalPanel(
     condition = "input.map_mode == 'single'",
-    sliderInput("yr_single", "Show footprint up to",
+    sliderInput("yr_single", "Year",
                 min = 2000, max = 2025, value = 2025, step = 5,
                 sep = "", ticks = TRUE,
                 animate = animationOptions(interval = 3000, loop = TRUE)),
-    helpText("Bright pixels were first built in the selected 5-year period; ",
-             "pale pixels are the earlier footprint. Press play to step ",
-             "2000 → 2025.")
+    helpText("Built-up footprint for each epoch. Press play to step ",
+             "through 2000, 2005, …, 2025.")
   ),
   conditionalPanel(
     condition = "input.map_mode == 'change'",
@@ -785,29 +776,19 @@ server <- function(input, output, session) {
       addControl(html = info_html, position = "topright", layerId = "info_box")
   })
 
-  # First epoch each pixel was built up, separately for residential and
-  # non-residential (1..6, NA where never built). Computed once per city.
-  first_built <- reactive({
-    a <- assets(); req(a)
-    list(res  = terra::which.lyr(a$res_stack  > 0),
-         nres = terra::which.lyr(a$nres_stack > 0))
-  })
-
-  # Layer(s) for the current mode / year(s), recomputed on every slider step.
+  # Raster layers for the current mode / year(s), recomputed on every slider
+  # step. Single mode = the built-up stock for that epoch; change mode = the
+  # intensive/extensive difference between two epochs. Colour scale is fixed
+  # (see the separate legend observer) so frames stay comparable.
   map_layers <- reactive({
     a <- assets(); req(a)
 
     if (input$map_mode == "single") {
       req(input$yr_single)
-      yr <- as.integer(input$yr_single)
-      k  <- match(yr, epochs)                       # 1..6
-      fb <- first_built()
-      # 2 = first built in this epoch (bright), 1 = built earlier (pale).
-      twotone <- function(x) terra::ifel(x == k, 2, terra::ifel(x < k, 1, NA))
-      list(mode = "single",
-           r_res  = twotone(fb$res),
-           r_nres = twotone(fb$nres),
-           badge  = as.character(yr))
+      yr <- as.character(as.integer(input$yr_single))
+      list(r_res  = a$res_stack[[yr]], r_nres = a$nres_stack[[yr]],
+           p_res  = pal_res_abs, p_nres = pal_nres_abs, upper = UPPER_ABS,
+           badge  = yr)
     } else {
       req(input$yr_start, input$yr_end, input$margin)
       y0 <- as.character(input$yr_start)
@@ -821,32 +802,21 @@ server <- function(input, output, session) {
         r_res  <- a$res_stack[[y1]]  - a$res_stack[[y0]]
         r_nres <- a$nres_stack[[y1]] - a$nres_stack[[y0]]
       }
-      list(mode = "change", r_res = r_res, r_nres = r_nres,
+      list(r_res = r_res, r_nres = r_nres,
            p_res = pal_res, p_nres = pal_nres, upper = UPPER, badge = NULL)
     }
   })
 
   observe({
     ml <- map_layers(); req(ml)
-    p <- leafletProxy("map") |>
-      clearGroup("Footprint") |>
+    leafletProxy("map") |>
       clearGroup("Residential") |>
       clearGroup("Non-residential") |>
-      removeControl("year_badge")
-
-    if (ml$mode == "single") {
-      p |>
-        addRasterImage(raster::raster(ml$r_res),  colors = pal_foot_res,
-                       opacity = 0.9, maxBytes = Inf, group = "Residential") |>
-        addRasterImage(raster::raster(ml$r_nres), colors = pal_foot_nres,
-                       opacity = 0.9, maxBytes = Inf, group = "Non-residential")
-    } else {
-      p |>
-        addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
-                       opacity = 0.85, maxBytes = Inf, group = "Residential") |>
-        addRasterImage(sqrt_capped(ml$r_nres, upper = ml$upper), colors = ml$p_nres,
-                       opacity = 0.85, maxBytes = Inf, group = "Non-residential")
-    }
+      removeControl("year_badge") |>
+      addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
+                     opacity = 0.85, maxBytes = Inf, group = "Residential") |>
+      addRasterImage(sqrt_capped(ml$r_nres, upper = ml$upper), colors = ml$p_nres,
+                     opacity = 0.85, maxBytes = Inf, group = "Non-residential")
 
     if (!is.null(ml$badge)) {
       leafletProxy("map") |>
@@ -866,8 +836,7 @@ server <- function(input, output, session) {
     req(input$map_mode)
     p <- leafletProxy("map") |>
       removeControl("leg_res") |>
-      removeControl("leg_nres") |>
-      removeControl("leg_epoch")
+      removeControl("leg_nres")
 
     if (input$map_mode == "single") {
       p |>
@@ -876,12 +845,14 @@ server <- function(input, output, session) {
           overlayGroups = c("Residential", "Non-residential", "Metro outline"),
           options       = layersControlOptions(collapsed = FALSE)) |>
         addLegend(layerId  = "leg_res",
-                  colors   = c("#f0b8b0", "#c1272d"),
-                  labels   = c("Residential — earlier", "Residential — this period"),
+                  colors   = pal_res_abs(sqrt(legend_brks_abs)),
+                  labels   = format(legend_brks_abs, big.mark = ","),
+                  title    = "Residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>",
                   position = "bottomleft") |>
         addLegend(layerId  = "leg_nres",
-                  colors   = c("#aecbe8", "#1f5fa8"),
-                  labels   = c("Non-residential — earlier", "Non-residential — this period"),
+                  colors   = pal_nres_abs(sqrt(legend_brks_abs)),
+                  labels   = format(legend_brks_abs, big.mark = ","),
+                  title    = "Non-residential built-up<br>(m&sup2;/pixel)<br><em>sqrt scale</em>",
                   position = "bottomleft")
     } else {
       req(input$yr_start, input$yr_end, input$margin)
