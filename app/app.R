@@ -398,7 +398,7 @@ ntl_sidebar <- sidebar(
   sliderInput("ntl_epoch", "Year",
               min = 2000, max = 2025, value = 2025, step = 5,
               sep = "", ticks = TRUE,
-              animate = animationOptions(interval = 2500, loop = TRUE)),
+              animate = animationOptions(interval = 3500, loop = TRUE)),
   helpText("Press play to step through 2000, 2005, …, 2025. ",
            "NTL for 2025 uses 2024 data (most recent available).")
 )
