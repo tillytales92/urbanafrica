@@ -153,7 +153,7 @@ per-city `{res,nres,total}_wgs84.tif` stacks (bands already named by year).
 
 | Piece | Status | Notes |
 |---|---|---|
-| Time slider with play (`app/app.R`) | **todo** | Replace the single-year `selectInput("yr_single")` with `sliderInput(min = 2000, max = 2025, step = 5, sep = "", animate = animationOptions(interval = 900, loop = TRUE))`. On each step redraw **only** the raster via `leafletProxy` (clear + re-add), not a full `renderLeaflet`, so playback is smooth; keep interval ≥ 800 ms. A step is just `stack[[as.character(input$yr_single)]]`. Optionally pre-encode the six PNGs per city if it stutters. |
+| Time slider with play (`app/app.R`) | **done (needs live-session testing)** | `yr_single` is now an animated `sliderInput` (2000–2025, step 5). `output$map` renders a bare shell once; a city observer pushes view + metro outline + info box via `leafletProxy`; a second observer (`map_layers()` reactive) pushes the two rasters + legends on every slider step. Both display modes now route through the proxy. Not yet exercised in a running session — verify the initial city paints without a nudge and that animation keeps up on large metros. |
 | `first_built_epoch_wgs84.tif` per city (`1_create_citydata.R`) | **todo** | New precomputed layer: per pixel, the earliest epoch with total built-up > 0 (values 2000/2005/…/2025; NA if never built). Sequential palette → concentric growth rings, whole trajectory at a glance. Add to the `do_*` existence gate; build it in the **same 100-city re-run as the GHS-POP pop block**. |
 | First-built-epoch overlay (`app/app.R`) | **todo** | Expose `first_built_epoch_wgs84.tif` as one more toggleable layer in the Urban Growth layers control, with a discrete 6-class legend. |
 

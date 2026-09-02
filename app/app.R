@@ -328,9 +328,11 @@ map_sidebar <- sidebar(
                inline   = TRUE),
   conditionalPanel(
     condition = "input.map_mode == 'single'",
-    selectInput("yr_single", "Year",
-                choices  = epochs,
-                selected = 2025)
+    sliderInput("yr_single", "Year",
+                min = 2000, max = 2025, value = 2025, step = 5,
+                sep = "", ticks = TRUE,
+                animate = animationOptions(interval = 1200, loop = TRUE)),
+    helpText("Press play to sweep 2000 → 2025.")
   ),
   conditionalPanel(
     condition = "input.map_mode == 'change'",
@@ -727,24 +729,74 @@ server <- function(input, output, session) {
     city_index |> dplyr::filter(slug == input$city)
   })
 
+  # The map is rendered once as a bare shell. Everything that changes with the
+  # city or the year slider is pushed via leafletProxy, so stepping / animating
+  # the year never reloads basemap tiles or resets the view.
   output$map <- renderLeaflet({
+    leaflet() |>
+      addTiles(group = "OpenStreetMap") |>
+      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+      hideGroup("OpenStreetMap") |>
+      setView(lng = 20, lat = 3, zoom = 3) |>
+      addLayersControl(
+        baseGroups    = c("Satellite", "OpenStreetMap"),
+        overlayGroups = c("Residential", "Non-residential", "Metro outline"),
+        options       = layersControlOptions(collapsed = FALSE)
+      )
+  })
+
+  # City shell — view + metro outline + info box. Fires on city change only.
+  observe({
     a  <- assets(); req(a)
-    bb <- city_bb()
+    bb <- city_bb(); req(nrow(bb) == 1)
     tree_cov <- bb$p_tree_cov
 
+    info_html <- city_info_html(
+      name           = bb$agglosname,
+      km2_2000       = bb$total_km2_2000,
+      km2_2025       = bb$total_km2_2025,
+      delta          = bb$delta_total_km2_2000_2025,
+      pct            = bb$pct_growth,
+      tree_cov       = tree_cov,
+      pop2020        = bb$pop2020,
+      sprawl_km2     = bb$sprawl_km2,
+      intens_km2     = bb$intens_km2,
+      sprawl_share   = bb$sprawl_share,
+      density_change = bb$density_change
+    )
+
+    leafletProxy("map") |>
+      clearGroup("Metro outline") |>
+      removeControl("info_box") |>
+      fitBounds(bb$xmin, bb$ymin, bb$xmax, bb$ymax) |>
+      addPolygons(
+        data        = a$metro,
+        fillColor   = pal_tree(ifelse(is.na(tree_cov), 0, tree_cov)),
+        fillOpacity = 0,
+        color = "#333", weight = 1.5, opacity = 1,
+        group = "Metro outline",
+        popup = as.character(info_html)
+      ) |>
+      addControl(html = info_html, position = "topright", layerId = "info_box")
+  })
+
+  # Raster layers + legends for the current mode / year(s).
+  # Recomputed on every slider step; pushed to the live map via proxy.
+  map_layers <- reactive({
+    a <- assets(); req(a)
+
     if (input$map_mode == "single") {
-      yr <- as.character(input$yr_single)
-      r_res      <- a$res_stack[[yr]]
-      r_nres     <- a$nres_stack[[yr]]
-      title_res  <- sprintf("Residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr)
-      title_nres <- sprintf("Non-residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr)
-      layer_res  <- "Residential built-up"
-      layer_nres <- "Non-residential built-up"
-      p_res  <- pal_res_abs
-      p_nres <- pal_nres_abs
-      upper  <- UPPER_ABS
-      brks   <- legend_brks_abs
+      req(input$yr_single)
+      yr <- as.character(as.integer(input$yr_single))
+      list(
+        r_res  = a$res_stack[[yr]],  r_nres = a$nres_stack[[yr]],
+        p_res  = pal_res_abs,        p_nres = pal_nres_abs,
+        upper  = UPPER_ABS,          brks   = legend_brks_abs,
+        title_res  = sprintf("Residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr),
+        title_nres = sprintf("Non-residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr)
+      )
     } else {
+      req(input$yr_start, input$yr_end, input$margin)
       y0 <- as.character(input$yr_start)
       y1 <- as.character(input$yr_end)
       yr_label <- sprintf("%s&rarr;%s", y0, y1)
@@ -761,61 +813,32 @@ server <- function(input, output, session) {
         title_res  <- sprintf("Residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr_label)
         title_nres <- sprintf("Non-residential &Delta;<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>", yr_label)
       }
-      layer_res  <- "Residential change"
-      layer_nres <- "Non-residential change"
-      p_res  <- pal_res
-      p_nres <- pal_nres
-      upper  <- UPPER
-      brks   <- legend_brks
+      list(
+        r_res = r_res,      r_nres = r_nres,
+        p_res = pal_res,    p_nres = pal_nres,
+        upper = UPPER,      brks   = legend_brks,
+        title_res = title_res, title_nres = title_nres
+      )
     }
+  })
 
-    info_html <- city_info_html(
-      name           = bb$agglosname,
-      km2_2000       = bb$total_km2_2000,
-      km2_2025       = bb$total_km2_2025,
-      delta          = bb$delta_total_km2_2000_2025,
-      pct            = bb$pct_growth,
-      tree_cov       = tree_cov,
-      pop2020        = bb$pop2020,
-      sprawl_km2     = bb$sprawl_km2,
-      intens_km2     = bb$intens_km2,
-      sprawl_share   = bb$sprawl_share,
-      density_change = bb$density_change
-    )
-
-    leaflet() |>
-      addTiles(group = "OpenStreetMap") |>
-      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
-      fitBounds(bb$xmin, bb$ymin, bb$xmax, bb$ymax) |>
-      hideGroup("OpenStreetMap") |>
-      addRasterImage(sqrt_capped(r_res,  upper = upper), colors = p_res,
-                     opacity = 0.85, maxBytes = Inf,
-                     group = layer_res) |>
-      addRasterImage(sqrt_capped(r_nres, upper = upper), colors = p_nres,
-                     opacity = 0.85, maxBytes = Inf,
-                     group = layer_nres) |>
-      addPolygons(
-        data        = a$metro,
-        fillColor   = pal_tree(ifelse(is.na(tree_cov), 0, tree_cov)),
-        fillOpacity = 0,
-        color = "#333", weight = 1.5, opacity = 1,
-        group = "Metro outline",
-        popup = as.character(info_html)
-      ) |>
-      addLayersControl(
-        baseGroups    = c("Satellite", "OpenStreetMap"),
-        overlayGroups = c(layer_res, layer_nres, "Metro outline"),
-        options       = layersControlOptions(collapsed = FALSE)
-      ) |>
-      addLegend(colors   = p_res(sqrt(brks)),
-                labels   = format(brks, big.mark = ","),
-                title    = title_res,
-                position = "bottomleft") |>
-      addLegend(colors   = p_nres(sqrt(brks)),
-                labels   = format(brks, big.mark = ","),
-                title    = title_nres,
-                position = "bottomleft") |>
-      addControl(html = info_html, position = "topright")
+  observe({
+    ml <- map_layers(); req(ml)
+    leafletProxy("map") |>
+      clearGroup("Residential") |>
+      clearGroup("Non-residential") |>
+      removeControl("leg_res") |>
+      removeControl("leg_nres") |>
+      addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
+                     opacity = 0.85, maxBytes = Inf, group = "Residential") |>
+      addRasterImage(sqrt_capped(ml$r_nres, upper = ml$upper), colors = ml$p_nres,
+                     opacity = 0.85, maxBytes = Inf, group = "Non-residential") |>
+      addLegend(layerId = "leg_res", colors = ml$p_res(sqrt(ml$brks)),
+                labels = format(ml$brks, big.mark = ","),
+                title = ml$title_res, position = "bottomleft") |>
+      addLegend(layerId = "leg_nres", colors = ml$p_nres(sqrt(ml$brks)),
+                labels = format(ml$brks, big.mark = ","),
+                title = ml$title_nres, position = "bottomleft")
   })
 
   # --- Nighttime Lights tab -------------------------------------------------
