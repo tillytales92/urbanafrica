@@ -144,13 +144,13 @@ pal_res_abs  <- colorNumeric("YlOrRd",  domain = c(0, sqrt(UPPER_ABS)), na.color
 pal_nres_abs <- colorNumeric("viridis", domain = c(0, sqrt(UPPER_ABS)), na.color = "transparent")
 pal_tree     <- colorNumeric("Greens",  domain = c(0, 100),             na.color = "#cccccc")
 
-# "Footprint by period" mode (the animated single-year view): colour each
-# built-up pixel by the epoch it was FIRST built (index 1..6 -> epochs above).
-# Sequential palette; the 2000 core is darkest, newest growth brightest.
-epoch_levels <- seq_along(epochs)                                   # 1..6
-epoch_labels <- c("by 2000", "2001–05", "2006–10",
-                  "2011–15", "2016–20", "2021–25")
-pal_epoch    <- colorFactor("viridis", levels = epoch_levels, na.color = "transparent")
+# "Footprint growth" mode (the animated single-year view). For the selected
+# epoch, each built-up pixel is drawn two-tone: pale = built in an earlier
+# epoch, bright = first built in THIS epoch. The bright "growth ring" lands on
+# different pixels every frame, so the change between frames is obvious.
+# Residential and non-residential are separate toggleable layers.
+pal_foot_res  <- colorFactor(c("#f0b8b0", "#c1272d"), levels = c(1, 2), na.color = "transparent")
+pal_foot_nres <- colorFactor(c("#aecbe8", "#1f5fa8"), levels = c(1, 2), na.color = "transparent")
 
 # NTL & lit/unlit palettes
 # Breaks anchored at the lit/unlit threshold (0.5); steps match the African
@@ -339,9 +339,10 @@ map_sidebar <- sidebar(
     sliderInput("yr_single", "Show footprint up to",
                 min = 2000, max = 2025, value = 2025, step = 5,
                 sep = "", ticks = TRUE,
-                animate = animationOptions(interval = 2000, loop = TRUE)),
-    helpText("Each pixel is coloured by the 5-year epoch it was first built up. ",
-             "Press play to watch the footprint expand 2000 → 2025.")
+                animate = animationOptions(interval = 3000, loop = TRUE)),
+    helpText("Bright pixels were first built in the selected 5-year period; ",
+             "pale pixels are the earlier footprint. Press play to step ",
+             "2000 → 2025.")
   ),
   conditionalPanel(
     condition = "input.map_mode == 'change'",
@@ -784,12 +785,12 @@ server <- function(input, output, session) {
       addControl(html = info_html, position = "topright", layerId = "info_box")
   })
 
-  # "Footprint by period": for each pixel, the epoch index (1..6) it was first
-  # built up. Computed once per city; the year slider only masks it.
+  # First epoch each pixel was built up, separately for residential and
+  # non-residential (1..6, NA where never built). Computed once per city.
   first_built <- reactive({
     a <- assets(); req(a)
-    tot <- a$res_stack + a$nres_stack
-    terra::which.lyr(tot > 0)            # 1..6, NA where never built
+    list(res  = terra::which.lyr(a$res_stack  > 0),
+         nres = terra::which.lyr(a$nres_stack > 0))
   })
 
   # Layer(s) for the current mode / year(s), recomputed on every slider step.
@@ -801,9 +802,12 @@ server <- function(input, output, session) {
       yr <- as.integer(input$yr_single)
       k  <- match(yr, epochs)                       # 1..6
       fb <- first_built()
+      # 2 = first built in this epoch (bright), 1 = built earlier (pale).
+      twotone <- function(x) terra::ifel(x == k, 2, terra::ifel(x < k, 1, NA))
       list(mode = "single",
-           r_epoch = terra::ifel(fb <= k, fb, NA),
-           badge   = as.character(yr))
+           r_res  = twotone(fb$res),
+           r_nres = twotone(fb$nres),
+           badge  = as.character(yr))
     } else {
       req(input$yr_start, input$yr_end, input$margin)
       y0 <- as.character(input$yr_start)
@@ -831,8 +835,11 @@ server <- function(input, output, session) {
       removeControl("year_badge")
 
     if (ml$mode == "single") {
-      p |> addRasterImage(raster::raster(ml$r_epoch), colors = pal_epoch,
-                          opacity = 0.9, maxBytes = Inf, group = "Footprint")
+      p |>
+        addRasterImage(raster::raster(ml$r_res),  colors = pal_foot_res,
+                       opacity = 0.9, maxBytes = Inf, group = "Residential") |>
+        addRasterImage(raster::raster(ml$r_nres), colors = pal_foot_nres,
+                       opacity = 0.9, maxBytes = Inf, group = "Non-residential")
     } else {
       p |>
         addRasterImage(sqrt_capped(ml$r_res,  upper = ml$upper), colors = ml$p_res,
@@ -866,12 +873,15 @@ server <- function(input, output, session) {
       p |>
         addLayersControl(
           baseGroups    = c("Satellite", "OpenStreetMap"),
-          overlayGroups = c("Footprint", "Metro outline"),
+          overlayGroups = c("Residential", "Non-residential", "Metro outline"),
           options       = layersControlOptions(collapsed = FALSE)) |>
-        addLegend(layerId  = "leg_epoch",
-                  colors   = pal_epoch(epoch_levels),
-                  labels   = epoch_labels,
-                  title    = "Built-up footprint<br>(period first built)",
+        addLegend(layerId  = "leg_res",
+                  colors   = c("#f0b8b0", "#c1272d"),
+                  labels   = c("Residential — earlier", "Residential — this period"),
+                  position = "bottomleft") |>
+        addLegend(layerId  = "leg_nres",
+                  colors   = c("#aecbe8", "#1f5fa8"),
+                  labels   = c("Non-residential — earlier", "Non-residential — this period"),
                   position = "bottomleft")
     } else {
       req(input$yr_start, input$yr_end, input$margin)
