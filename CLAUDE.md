@@ -63,10 +63,26 @@ under `scripts/`.
 - `2_4_sprawl_metrics.R` — sprawl / intensification / density decomposition → `data/intermediate/sprawl_stats.Rds` (and a copy to `app/data/`).
 
 **`scripts/exploratory/` — not wired into the app:**
-- `0_ghslprep_1km.R` — continental 1 km built-up diff map (`data/raw/ghsl/1km/`), aggregation controlled by `FACT`.
-- `2_2_leaflet_metro.R` — single-metro static leaflet HTML; superseded by the app. Set `target_metro` near the top; reads the per-city assets from `1_create_citydata.R`.
 - `2_3_rgee.R` — Landsat SWIR-NIR-Red false-colour composites for African capitals (needs GEE).
 - `test_clustering.R` — per-pixel k-means growth-trajectory typology for one city.
+- `0_builtv_change_check.R` — feasibility check: is there enough vertical growth
+  (GHS-BUILT-V volume ÷ BUILT-S footprint = mean height, 2000 vs 2025) across the
+  top-100 to justify a full BUILT-V pipeline. Reads the raw BUILT-V globals via
+  GDAL `/vsizip/` (no continental crop) — extraction is slow (zip-compressed
+  random access, not a plain GeoTIFF).
+- `1_osm_load.R` — OSM layer pull prototype (roads/buildings/landuse/water) for
+  one agglomeration via Overpass; set `target_slug` near the top.
+- `1_edge_saturation_check.R` — scores each city for whether its Africapolis
+  polygon is boundary-saturated (built-up right up to the edge, a sign the fixed
+  2015 boundary caps measured growth). See "Boundary-quality follow-ups" above.
+- `eda_corridors.py` — EDA of the African Development Corridors Database 2022
+  (`data/raw/devcorridors/`); Python, not R (needs `geopandas`).
+- `2_corridor_proximity.R` — tests whether growth correlates with proximity to a
+  development corridor, primate vs. secondary cities. Null result, not written up
+  in the insights doc — not worth reviving without a better proximity measure
+  (nearest-corridor distance has almost no variance across the 100 cities:
+  median 5 km, since corridors are drawn between major cities in the first place).
+- `insights_1990_2025.R` — reproduces the findings in `docs/insights-1990-2025.md`.
 
 ## Data architecture
 
@@ -164,13 +180,31 @@ intensity animates annually; the lit/unlit layer snaps each slider year to the n
 Later, optional: extend the annual range once VIIRS 2025 is available; a "Download
 animation" GIF-export button.
 
+### Boundary-quality follow-ups (from the 2026-09-14 edge-saturation check)
+
+`scripts/exploratory/1_edge_saturation_check.R` scored 90/100 cities for whether
+their Africapolis polygon is boundary-saturated (edge ring as built-up as the
+interior — a sign the fixed 2015-vintage boundary is capping measured growth).
+Results in `data/intermediate/edge_saturation_check.Rds`; write-up in
+`docs/insights-1990-2025.md` caveat 6 / §7.
+
+- **Cairo (al_qahira) is untested.** Its polygon's geometry is too complex for the
+  inward-buffer step — repeated timeouts even at 240s. Worth a targeted retry with
+  `sf::st_simplify()` before buffering (Cairo is the one major city with no
+  boundary-saturation reading at all).
+- **Sync the app's About/methodology tab** with the caveats already written into
+  `docs/insights-1990-2025.md` today (Abuja's boundary-saturated growth number,
+  the §7 "sprawling out not up" BUILT-V finding) — currently these only live in
+  `docs/`, not in front of anyone using the dashboard.
+
 ## Conventions
 
 - Use `terra` (not the deprecated `raster` package) for all raster I/O and operations;
   convert to `raster::raster()` only at the point of passing to `leaflet::addRasterImage()`.
-- Match rasters/bands/columns **by name**, never by position. `0_ghslprep_1km.R` matches
-  GHSL files by epoch string (`grep("E2000", ...)`); `0_ghslprep.R` still uses positional
-  slices (`tifs[1:6]` / `tifs[7:12]`) and should be treated as fragile.
+- Match rasters/bands/columns **by name**, never by position. `0_ghslprep.R` matches
+  GHSL files by epoch string (`grep("GHS_BUILT_S_E%d_", ..., perl = TRUE)`), not
+  position — this used to be the known-fragile example but was rewritten during the
+  1990-epoch migration.
 - Paths via `here()` only — no hardcoded absolute paths (the `rgee` scripts are the
   known exception).
 - `writeRaster()` does not create parent directories — ensure `data/intermediate/raster/`
