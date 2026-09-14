@@ -10,16 +10,14 @@ pacman::p_load(
 dir.create(here("output"),            showWarnings = FALSE)
 dir.create(here("data/intermediate"), showWarnings = FALSE)
 
-target_years <- c(2000, 2005, 2010, 2015, 2020, 2025)
+# Epoch years are taken from the raster band names (set by 0_ghslprep.R), so this
+# adapts to the 6-epoch (2000–2025) or 8-epoch (1990–2025) stack automatically.
 
-# 2. Load Africapolis shapefile -------------------------------------------------
-# Urban areas in Africa
-agglom <- st_read(here("data/raw/africapolis/agglomerations.shp")) |>
-  clean_names()
-
-#for testing: select larger than 100,000
-agglom_sel <- agglom |>
-  filter(pop2020 > 100000)
+# 2. Canonical top-100 agglomerations -----------------------------------------
+# Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
+# (Previously: every agglomeration with pop2020 > 100000 -- now aligned to the
+# single top-100 set the rest of the pipeline uses.)
+agglom_sel <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
 
 # 3. Rasters ---------------------------------------------------------------
 ####GHSL####
@@ -27,7 +25,10 @@ agglom_sel <- agglom |>
 ghsl_total <- terra::rast(here("data/intermediate/raster/total_africa.tif"))
 #NRES
 ghsl_nres <- terra::rast(here("data/intermediate/raster/nres_africa.tif"))
-names(ghsl_nres) <- c(2000,2005,2010,2015,2020,2025)
+# Match band labels to the total stack by position of the shared epoch set
+# (both written together by 0_ghslprep.R with identical band order).
+stopifnot(terra::nlyr(ghsl_nres) == terra::nlyr(ghsl_total))
+names(ghsl_nres) <- names(ghsl_total)
 
 # 4. Extract per-city built-up area --------------------------------------------
 # Project polygons into GHSL native CRS (Mollweide / EPSG:54009) for extraction.

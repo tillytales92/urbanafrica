@@ -3,7 +3,7 @@
 #
 # Launch:  shiny::runApp(here::here("app"), launch.browser = TRUE)
 
-pacman::p_load(shiny, bslib, leaflet, sf, here, dplyr, countrycode, ggplot2,
+pacman::p_load(shiny, bslib, leaflet, sf, here, dplyr, tidyr, countrycode, ggplot2,
                scales, forcats, terra, DT, plotly, shinycssloaders,
                patchwork, raster)   # leaflet::addRasterImage needs RasterLayer
 
@@ -17,8 +17,17 @@ cities_root <- {
 city_index   <- readRDS("data/city_index.Rds") |>
   dplyr::mutate(
     country    = countrycode::countrycode(iso3, "iso3c", "country.name"),
-    subregion  = countrycode::countrycode(iso3, "iso3c", "un.regionsub.name"),
-    pct_growth = delta_total_km2_2000_2025 / total_km2_2000
+    # Five macro regions from countrycode's region23, ordered N→W→C→E→S.
+    macro_region = factor(dplyr::recode(
+        countrycode::countrycode(iso3, "iso3c", "region23"),
+        "Northern Africa" = "Northern Africa",
+        "Western Africa"  = "West Africa",
+        "Middle Africa"   = "Central Africa",
+        "Eastern Africa"  = "East Africa",
+        "Southern Africa" = "Southern Africa"),
+      levels = c("Northern Africa", "West Africa", "Central Africa",
+                 "East Africa", "Southern Africa")),
+    pct_growth = delta_total_km2_1990_2025 / total_km2_1990
   ) |>
   dplyr::arrange(country, agglosname)
 
@@ -29,8 +38,8 @@ city_index <- city_index |>
   dplyr::left_join(tree_cover,   by = "slug") |>
   dplyr::left_join(
     sprawl_stats |> dplyr::select(slug, sprawl_km2, intens_km2, sprawl_share,
-                                   footprint_2000_km2, footprint_2025_km2,
-                                   density_2000, density_2025, density_change),
+                                   footprint_1990_km2, footprint_2025_km2,
+                                   density_1990, density_2025, density_change),
     by = "slug"
   )
 
@@ -68,29 +77,51 @@ ts_data <- readRDS("data/africapolis_builtup.Rds") |>
     by = c("iso3", "agglosname")
   )
 
-# Annual NTL time-series 2000-2024 (25 years × 100 cities).
+# GHS-POP population time-series (100 cities × 8 epochs, 1990–2025).
+pop_ts_data <- readRDS("data/africapolis_pop.Rds") |>
+  dplyr::inner_join(
+    city_index |> dplyr::select(slug, iso3, agglosname),
+    by = c("iso3", "agglosname")
+  )
+
+# NTL time-series. Bloom- + top-coding-corrected DMSP (Chiovelli et al. 2026),
+# annual 1992–2025; values are corrected DN, not radiance.
+#   ntl_lit_share    = share of metro pixels with DN > 0 — saturates toward 1 for
+#                      large agglomerations by 2025, so not used on its own.
+#   ntl_dimlit_share = share with 0 < DN <= 10 (DMSP "marginal light").
+#   darkdim_share    = share with DN <= 10 (dark OR dim) — the informative,
+#                      non-saturating "under-lit" measure.
 ntl_ts_data <- readRDS("data/africapolis_ntl.Rds") |>
   dplyr::inner_join(
     city_index |> dplyr::select(slug, iso3, agglosname),
     by = c("iso3", "agglosname")
   ) |>
-  dplyr::mutate(unlit_share = 1 - ntl_lit_share)
+  dplyr::mutate(darkdim_share = (1 - ntl_lit_share) + ntl_dimlit_share)
 
 # Pre-compute key NTL statistics and join into city_index for info boxes.
 ntl_stats_2000 <- ntl_ts_data |>
   dplyr::filter(year == 2000) |>
-  dplyr::select(slug, ntl_mean_2000 = ntl_mean, unlit_share_2000 = unlit_share)
+  dplyr::select(slug, ntl_mean_2000 = ntl_mean)
 ntl_stats_2020 <- ntl_ts_data |>
   dplyr::filter(year == 2020) |>
   dplyr::select(slug, ntl_mean_2020 = ntl_mean)
-ntl_stats_2024 <- ntl_ts_data |>
-  dplyr::filter(year == 2024) |>
-  dplyr::select(slug, ntl_mean_2024 = ntl_mean)
+ntl_stats_2025 <- ntl_ts_data |>
+  dplyr::filter(year == 2025) |>
+  dplyr::select(slug, ntl_mean_2025 = ntl_mean)
 
 city_index <- city_index |>
   dplyr::left_join(ntl_stats_2000, by = "slug") |>
   dplyr::left_join(ntl_stats_2020, by = "slug") |>
-  dplyr::left_join(ntl_stats_2024, by = "slug")
+  dplyr::left_join(ntl_stats_2025, by = "slug")
+
+# GHS-POP 1990 & 2025 per city → Rankings columns + per-capita built-up.
+pop_wide <- pop_ts_data |>
+  dplyr::filter(year %in% c(1990, 2025)) |>
+  dplyr::select(slug, year, pop) |>
+  tidyr::pivot_wider(names_from = year, values_from = pop,
+                     names_prefix = "pop_ghs_") |>
+  dplyr::mutate(pop_ghs_growth = (pop_ghs_2025 - pop_ghs_1990) / pop_ghs_1990)
+city_index <- city_index |> dplyr::left_join(pop_wide, by = "slug")
 
 # Multi-select choices: "City (ISO3)" → slug, so duplicate names disambiguate.
 all_city_choices <- setNames(
@@ -98,22 +129,55 @@ all_city_choices <- setNames(
   paste0(city_index$agglosname, " (", city_index$iso3, ")")
 )
 
-# Pre-formatted table for the Rankings tab (built once at startup).
-league_df <- city_index |>
-  dplyr::arrange(dplyr::desc(pct_growth)) |>
-  dplyr::transmute(
-    City                  = agglosname,
-    Country               = country,
-    `Sub-region`          = subregion,
-    `Built-up 2000 (km²)` = round(total_km2_2000, 1),
-    `Built-up 2025 (km²)` = round(total_km2_2025, 1),
-    `Change (km²)`        = round(delta_total_km2_2000_2025, 1),
-    `Growth (%)`          = round(pct_growth * 100, 1),
-    `Sprawl (%)`          = round(sprawl_share * 100, 1),
-    `Density change`      = round(density_change, 3),
-    `Tree cover (%)`      = round(p_tree_cov, 1),
-    `Unlit share (%)`     = round(unlit_share_2025 * 100, 1)
-  )
+# Pre-formatted Rankings tables (built once at startup) — one per theme, chosen
+# by the Rankings-tab selector. `rank_sort` names the column each is sorted by
+# (descending) and that carries the value bar.
+rank_tables <- list(
+  `Built-up` = city_index |>
+    dplyr::transmute(
+      City                  = agglosname,
+      Country               = country,
+      Region                = as.character(macro_region),
+      `Built-up 1990 (km²)` = round(total_km2_1990, 1),
+      `Built-up 2025 (km²)` = round(total_km2_2025, 1),
+      `Change (km²)`        = round(delta_total_km2_1990_2025, 1),
+      `Growth (%)`          = round(pct_growth * 100, 1),
+      `Sprawl (%)`          = round(sprawl_share * 100, 1),
+      `Density change`      = round(density_change, 3),
+      `Tree cover (%)`      = round(p_tree_cov, 1)
+    ) |>
+    dplyr::arrange(dplyr::desc(`Growth (%)`)),
+
+  `Nighttime lights` = city_index |>
+    dplyr::transmute(
+      City                    = agglosname,
+      Country                 = country,
+      Region                  = as.character(macro_region),
+      `Mean NTL 2000 (DN)`    = round(ntl_mean_2000, 1),
+      `Mean NTL 2025 (DN)`    = round(ntl_mean_2025, 1),
+      `NTL change (DN)`       = round(ntl_mean_2025 - ntl_mean_2000, 1),
+      `Dark/dim 2000 (%)`     = round(darkdim_share_2000 * 100, 1),
+      `Dark/dim 2025 (%)`     = round(darkdim_share_2025 * 100, 1),
+      `Dark/dim change (pp)`  = round((darkdim_share_2025 - darkdim_share_2000) * 100, 1)
+    ) |>
+    dplyr::arrange(dplyr::desc(`NTL change (DN)`)),
+
+  `Population` = city_index |>
+    dplyr::transmute(
+      City                     = agglosname,
+      Country                  = country,
+      Region                   = as.character(macro_region),
+      `Pop 1990 (M)`           = round(pop_ghs_1990 / 1e6, 2),
+      `Pop 2025 (M)`           = round(pop_ghs_2025 / 1e6, 2),
+      `Pop growth (%)`         = round(pop_ghs_growth * 100, 1),
+      `Built-up/cap 1990 (m²)` = round(total_km2_1990 * 1e6 / pop_ghs_1990, 1),
+      `Built-up/cap 2025 (m²)` = round(total_km2_2025 * 1e6 / pop_ghs_2025, 1)
+    ) |>
+    dplyr::arrange(dplyr::desc(`Pop growth (%)`))
+)
+rank_sort <- c(`Built-up` = "Growth (%)",
+               `Nighttime lights` = "NTL change (DN)",
+               `Population` = "Pop growth (%)")
 
 # Slug picker for the quick-filter preset buttons.
 preset_slugs <- function(kind, n = 5) {
@@ -130,7 +194,7 @@ preset_slugs <- function(kind, n = 5) {
 # Change values are heavily right-skewed (median 372, p99 ~4400 m²/pixel) and
 # effectively one-sided (negatives = 0.03% of pixels, treated as NA). Display
 # on a sqrt scale with viridis; zeros render transparent so the basemap shows.
-epochs      <- c(2000, 2005, 2010, 2015, 2020, 2025)
+epochs      <- c(1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025)
 UPPER       <- 4400                       # cap = ~p99 of positive change
 legend_brks <- c(1, 100, 500, 1000, 2000, UPPER)   # start at 1: zeros are transparent
 
@@ -144,18 +208,24 @@ pal_res_abs  <- colorNumeric("YlOrRd",  domain = c(0, sqrt(UPPER_ABS)), na.color
 pal_nres_abs <- colorNumeric("viridis", domain = c(0, sqrt(UPPER_ABS)), na.color = "transparent")
 pal_tree     <- colorNumeric("Greens",  domain = c(0, 100),             na.color = "#cccccc")
 
-# NTL & lit/unlit palettes
-# Breaks anchored at the lit/unlit threshold (0.5); steps match the African
-# city distribution: median ~6.5, p75 ~17, p90 ~33, p99 ~71 nW/cm²/sr (2024).
+# NTL & lit/unlit palettes — bloom/top-code-corrected DMSP, corrected-DN scale
+# (NOT radiance). Per-pixel DN for a large agglomeration in 2025 runs roughly
+# median ~30, p90 ~75, p99 ~120. Breaks step around the pipeline's dim/bright
+# split at DN 10 (see scripts/1_create_citydata.R).
 NTL_UPPER    <- 200
-NTL_BREAKS   <- c(0, 0.5, 5, 20, 60, NTL_UPPER)
-NTL_LABELS   <- c("0", "0.5 (lit threshold)", "5", "20", "60", "200+")
+NTL_BREAKS   <- c(0, 10, 30, 60, 100, NTL_UPPER)
+NTL_LABELS   <- c("0 (unlit)", "10 (dim ceiling)", "30", "60", "100", "200+")
 # log1p transform spreads low-value pixels across the palette (most African city
-# pixels sit under ~30 nW/cm²/sr; linear 0–200 would render them all near-black).
-# The legend still shows original-scale labels; log1p is applied to the break
-# values when requesting colours from the palette.
+# pixels sit under ~DN 60; a linear 0–200 scale would render them all near-black).
+# The legend shows original-scale labels; log1p is applied to the break values
+# when requesting colours from the palette.
 pal_ntl      <- colorNumeric("inferno", domain = c(0, log1p(NTL_UPPER)), na.color = "transparent")
-pal_lu       <- colorFactor(c("#e34a33", "#fee391"), levels = c(1, 2), na.color = "transparent")
+# lit_unlit rasters are 4-state: 0 unbuilt / 1 unlit (DN 0) / 2 dim (DN 1–10) /
+# 3 bright (DN > 10).
+LU_LEVELS    <- c(1, 2, 3)
+LU_COLS      <- c("#b30000", "#fd8d3c", "#ffffb2")   # unlit / dim / bright
+LU_LABELS    <- c("Built — unlit (DN 0)", "Built — dim (DN 1–10)", "Built — bright (DN > 10)")
+pal_lu       <- colorFactor(LU_COLS, levels = LU_LEVELS, na.color = "transparent")
 
 sqrt_capped <- function(r, upper = UPPER) {
   if (inherits(r, "SpatRaster")) r <- raster::raster(r)
@@ -165,47 +235,79 @@ sqrt_capped <- function(r, upper = UPPER) {
   raster::setValues(r, v)
 }
 
-# Info panel for the Urban Growth tab.
-# Shows built-up stats, sprawl decomposition, tree cover and population (Africapolis 2020).
-# Unlit built-up is shown in the NTL tab instead.
-city_info_html <- function(name, km2_2000, km2_2025, delta, pct,
-                           tree_cov, pop2020 = NA,
-                           sprawl_km2 = NA, intens_km2 = NA, sprawl_share = NA,
-                           density_change = NA) {
+# Info panel for the Urban Growth tab — dynamic on the selected year range.
+# `mode` is "single" or "change". In "change" mode the built-up, population and
+# sprawl/density rows all refer to y0 -> y1; in "single" mode only y0 is used.
+# `gs` is the growth_stats() list for (y0, y1) (sprawl / footprint / density);
+# pass NULL to omit those rows.
+city_info_html <- function(name, mode, y0, y1,
+                           bu_y0, bu_y1, pop_y0, pop_y1,
+                           tree_cov, gs = NULL) {
+  km  <- function(x) if (is.na(x)) "N/A" else sprintf("%.1f km&sup2;", x)
+  ppl <- function(x) if (is.na(x)) "N/A" else format(round(x), big.mark = ",", scientific = FALSE)
+  gpct <- function(x) if (is.na(x)) "N/A" else sprintf("%+.0f%%", x * 100)
   tree_str <- if (is.na(tree_cov)) "N/A" else sprintf("%.1f%%", tree_cov)
-  pop_str  <- if (is.na(pop2020))  "N/A" else format(round(pop2020), big.mark = ",", scientific = FALSE)
 
-  sprawl_row <- if (!is.na(sprawl_share)) {
-    paste0(
-      "<tr style='border-top:1px solid #ddd'>",
-      "<td style='color:#555;padding-right:8px;padding-top:4px'>New land (sprawl)</td>",
-      "<td style='text-align:right;padding-top:4px'>",
-      sprintf("%.1f km&sup2; (%.0f%%)", sprawl_km2, sprawl_share * 100), "</td></tr>",
-      "<tr><td style='color:#555;padding-right:8px'>Densification</td>",
-      "<td style='text-align:right'>",
-      sprintf("%.1f km&sup2; (%.0f%%)", intens_km2, (1 - sprawl_share) * 100), "</td></tr>",
-      "<tr><td style='color:#555;padding-right:8px'>Density trend*</td>",
-      "<td style='text-align:right'>",
-      if (is.na(density_change)) "N/A"
-      else if (density_change > 0) sprintf("+%.3f (densifying)", density_change)
-      else sprintf("%.3f (sprawling)", density_change),
-      "</td></tr>"
+  row <- function(label, value, top = FALSE) {
+    paste0("<tr", if (top) " style='border-top:1px solid #ddd'" else "", ">",
+           "<td style='color:#555;padding-right:8px'>", label, "</td>",
+           "<td style='text-align:right'>", value, "</td></tr>")
+  }
+
+  if (mode == "single") {
+    body <- paste0(
+      row(paste0("Built-up ", y0), km(bu_y0)),
+      if (!is.null(gs)) row(paste0("Footprint ", y0), km(gs$footprint_0)) else "",
+      if (!is.null(gs) && !is.na(gs$density_0))
+        row(paste0("Density index ", y0), sprintf("%.3f", gs$density_0)) else "",
+      row(paste0("Population ", y0), ppl(pop_y0), top = TRUE),
+      row("Tree cover (2020)", tree_str, top = TRUE)
     )
-  } else ""
+    footnote <- ""
+  } else {
+    d_bu  <- if (is.na(bu_y0)  || is.na(bu_y1))  NA_real_ else bu_y1 - bu_y0
+    g_bu  <- if (is.na(d_bu)   || is.na(bu_y0)  || bu_y0  == 0) NA_real_ else d_bu / bu_y0
+    d_pop <- if (is.na(pop_y0) || is.na(pop_y1)) NA_real_ else pop_y1 - pop_y0
+    g_pop <- if (is.na(d_pop)  || is.na(pop_y0) || pop_y0 == 0) NA_real_ else d_pop / pop_y0
 
-  footnote <- if (!is.na(sprawl_share)) {
-    paste0(
+    sprawl_rows <- if (!is.null(gs) && !is.na(gs$sprawl_share)) paste0(
+      row("New land (sprawl)",
+          sprintf("%.1f km&sup2; (%.0f%%)", gs$sprawl_km2, gs$sprawl_share * 100), top = TRUE),
+      row("Densification",
+          sprintf("%.1f km&sup2; (%.0f%%)", gs$intens_km2, (1 - gs$sprawl_share) * 100)),
+      row("Density trend*",
+          if (is.na(gs$density_change)) "N/A"
+          else if (gs$density_change > 0) sprintf("+%.3f (densifying)", gs$density_change)
+          else sprintf("%.3f (sprawling)", gs$density_change))
+    ) else ""
+
+    body <- paste0(
+      row(paste0("Built-up ", y0), km(bu_y0)),
+      row(paste0("Built-up ", y1), km(bu_y1)),
+      row(sprintf("Increase %s&ndash;%s", y0, y1),
+          sprintf("<b>%s (%s)</b>",
+                  if (is.na(d_bu)) "N/A" else sprintf("+%.1f km&sup2;", d_bu), gpct(g_bu)),
+          top = TRUE),
+      row(paste0("Population ", y0), ppl(pop_y0), top = TRUE),
+      row(paste0("Population ", y1), ppl(pop_y1)),
+      row(sprintf("Pop change %s&ndash;%s", y0, y1),
+          sprintf("<b>%s (%s)</b>",
+                  if (is.na(d_pop)) "N/A" else paste0("+", ppl(d_pop)), gpct(g_pop))),
+      sprawl_rows,
+      row("Tree cover (2020)", tree_str, top = TRUE)
+    )
+    footnote <- if (!is.null(gs) && !is.na(gs$sprawl_share)) paste0(
       "<p style='margin:6px 0 0;font-size:10px;color:#888;",
       "border-top:1px solid #eee;padding-top:4px'>",
-      "* Density trend = built-up area &divide; built-up footprint (both km&sup2;).<br>",
-      "Positive = densifying; negative = footprint expanding faster than surface.",
+      "* Density trend = built-up surface &divide; built-up footprint (both km&sup2;),<br>",
+      y1, " minus ", y0, ".<br>Positive = densifying; negative = footprint spreading thin.",
       "</p>"
-    )
-  } else ""
+    ) else ""
+  }
 
   HTML(paste0(
     "<div style='background:rgba(255,255,255,0.95);border-radius:6px;",
-    "box-shadow:0 1px 5px rgba(0,0,0,0.4);min-width:220px;",
+    "box-shadow:0 1px 5px rgba(0,0,0,0.4);min-width:230px;max-width:290px;",
     "font-size:12px;font-family:sans-serif'>",
     "<div onclick=\"var b=this.nextElementSibling;var a=this.querySelector('.arr');",
     "if(b.style.display==='none'){b.style.display='block';a.innerHTML='&#9660;'}",
@@ -216,42 +318,32 @@ city_info_html <- function(name, km2_2000, km2_2025, delta, pct,
     "<span class='arr'>&#9660;</span></div>",
     "<div style='padding:8px 12px'>",
     "<table style='width:100%;border-collapse:collapse;line-height:1.6'>",
-    "<tr><td style='color:#555;padding-right:8px'>Built-up 2000</td>",
-    "<td style='text-align:right'>", sprintf("%.1f km&sup2;", km2_2000), "</td></tr>",
-    "<tr><td style='color:#555;padding-right:8px'>Built-up 2025</td>",
-    "<td style='text-align:right'>", sprintf("%.1f km&sup2;", km2_2025), "</td></tr>",
-    "<tr style='border-top:1px solid #ddd'>",
-    "<td style='color:#555;padding-right:8px;padding-top:4px'>Increase 2000–2025</td>",
-    "<td style='text-align:right;padding-top:4px;font-weight:600'>",
-    sprintf("+%.1f km&sup2; (+%.0f%%)", delta, pct * 100), "</td></tr>",
-    sprawl_row,
-    "<tr style='border-top:1px solid #ddd'>",
-    "<td style='color:#555;padding-right:8px;padding-top:4px'>Tree cover (2020)</td>",
-    "<td style='text-align:right;padding-top:4px'>", tree_str, "</td></tr>",
-    "<tr><td style='color:#555;padding-right:8px'>Population (2020)</td>",
-    "<td style='text-align:right'>", pop_str, "</td></tr>",
+    body,
     "</table>",
     footnote,
+    "<p style='margin:6px 0 0;font-size:10px;color:#888;border-top:1px solid #eee;padding-top:4px'>",
+    "Population: GHS-POP R2023A &mdash; disaggregated using built-up,<br>so per-capita figures are partly circular.",
+    "</p>",
     "</div></div>"
   ))
 }
 
 # Info panel for the Nighttime Lights tab.
-# Shows NTL intensity (2020 / 2025 proxy / change) and unlit built-up share
-# (2000 / 2025 proxy / change).
-ntl_info_html <- function(name, ntl_2020, ntl_2024,
-                           unlit_2000, unlit_2025) {
-  fmt_ntl <- function(x) if (is.na(x)) "N/A" else sprintf("%.2f", x)
-  ntl_delta <- if (is.na(ntl_2020) || is.na(ntl_2024)) NA_real_
-               else ntl_2024 - ntl_2020
+# Shows mean NTL intensity (corrected DN, 2000 / 2025 / change) and the
+# dark-or-dim built-up share (DN <= 10; 2000 / 2025 / change).
+ntl_info_html <- function(name, ntl_2000, ntl_2025,
+                           darkdim_2000, darkdim_2025) {
+  fmt_ntl <- function(x) if (is.na(x)) "N/A" else sprintf("%.1f", x)
+  ntl_delta <- if (is.na(ntl_2000) || is.na(ntl_2025)) NA_real_
+               else ntl_2025 - ntl_2000
   ntl_delta_str <- if (is.na(ntl_delta)) "N/A"
-                   else sprintf("%+.2f", ntl_delta)
+                   else sprintf("%+.1f", ntl_delta)
 
   fmt_pct <- function(x) if (is.na(x)) "N/A" else sprintf("%.1f%%", x * 100)
-  unlit_delta_pp <- if (is.na(unlit_2000) || is.na(unlit_2025)) NA_real_
-                    else (unlit_2025 - unlit_2000) * 100
-  unlit_delta_str <- if (is.na(unlit_delta_pp)) "N/A"
-                     else sprintf("%+.1f pp", unlit_delta_pp)
+  dd_delta_pp <- if (is.na(darkdim_2000) || is.na(darkdim_2025)) NA_real_
+                    else (darkdim_2025 - darkdim_2000) * 100
+  dd_delta_str <- if (is.na(dd_delta_pp)) "N/A"
+                     else sprintf("%+.1f pp", dd_delta_pp)
 
   HTML(paste0(
     "<div style='background:rgba(255,255,255,0.95);border-radius:6px;",
@@ -267,25 +359,26 @@ ntl_info_html <- function(name, ntl_2020, ntl_2024,
     "<div style='padding:8px 12px'>",
     "<table style='width:100%;border-collapse:collapse;line-height:1.6'>",
     "<tr><td colspan='2' style='color:#444;font-weight:600;padding-bottom:2px'>",
-    "NTL intensity (nW/cm&sup2;/sr)</td></tr>",
-    "<tr><td style='color:#555;padding-right:8px'>2020</td>",
-    "<td style='text-align:right'>", fmt_ntl(ntl_2020), "</td></tr>",
-    "<tr><td style='color:#555;padding-right:8px'>2025 (2024 proxy)</td>",
-    "<td style='text-align:right'>", fmt_ntl(ntl_2024), "</td></tr>",
+    "Mean NTL (corrected DN)</td></tr>",
+    "<tr><td style='color:#555;padding-right:8px'>2000</td>",
+    "<td style='text-align:right'>", fmt_ntl(ntl_2000), "</td></tr>",
+    "<tr><td style='color:#555;padding-right:8px'>2025</td>",
+    "<td style='text-align:right'>", fmt_ntl(ntl_2025), "</td></tr>",
     "<tr style='border-bottom:1px solid #ddd'>",
     "<td style='color:#555;padding-right:8px'>Change</td>",
     "<td style='text-align:right;font-weight:600'>", ntl_delta_str, "</td></tr>",
     "<tr><td colspan='2' style='color:#444;font-weight:600;",
-    "padding-top:6px;padding-bottom:2px'>Unlit built-up share</td></tr>",
+    "padding-top:6px;padding-bottom:2px'>Dark or dim built-up share</td></tr>",
     "<tr><td style='color:#555;padding-right:8px'>2000</td>",
-    "<td style='text-align:right'>", fmt_pct(unlit_2000), "</td></tr>",
-    "<tr><td style='color:#555;padding-right:8px'>2025 (2024 proxy)</td>",
-    "<td style='text-align:right'>", fmt_pct(unlit_2025), "</td></tr>",
+    "<td style='text-align:right'>", fmt_pct(darkdim_2000), "</td></tr>",
+    "<tr><td style='color:#555;padding-right:8px'>2025</td>",
+    "<td style='text-align:right'>", fmt_pct(darkdim_2025), "</td></tr>",
     "<tr><td style='color:#555;padding-right:8px'>Change</td>",
-    "<td style='text-align:right;font-weight:600'>", unlit_delta_str, "</td></tr>",
+    "<td style='text-align:right;font-weight:600'>", dd_delta_str, "</td></tr>",
     "</table>",
     "<p style='margin:6px 0 0;font-size:10px;color:#888;border-top:1px solid #eee;padding-top:4px'>",
-    "Lit threshold: 0.5 nW/cm&sup2;/sr. Unlit = informal / low-density built-up.",
+    "Corrected DN: bloom- & top-code-corrected DMSP. Dark = DN 0, dim = DN 1&ndash;10 ",
+    "(below the DMSP detection floor) &mdash; a proxy for informal / low-density built-up.",
     "</p>",
     "</div></div>"
   ))
@@ -295,10 +388,44 @@ load_assets <- function(slug) {
   if (is.null(cities_root)) return(NULL)
   d <- file.path(cities_root, slug)
   if (!dir.exists(d)) return(NULL)
+  tot_f <- file.path(d, "total.tif")   # native Mollweide, equal-area — for stats
   list(
-    metro      = sf::st_read(file.path(d, "metro.gpkg"), quiet = TRUE),
-    res_stack  = terra::rast(file.path(d, "res_wgs84.tif")),
-    nres_stack = terra::rast(file.path(d, "nres_wgs84.tif"))
+    metro        = sf::st_read(file.path(d, "metro.gpkg"), quiet = TRUE),
+    res_stack    = terra::rast(file.path(d, "res_wgs84.tif")),
+    nres_stack   = terra::rast(file.path(d, "nres_wgs84.tif")),
+    total_native = if (file.exists(tot_f)) terra::rast(tot_f) else NULL
+  )
+}
+
+# Sprawl / footprint / density decomposition for a city over (y0, y1),
+# recomputed at runtime so the Urban Growth info box tracks the year picker.
+# Mirrors scripts/2_4_sprawl_metrics.R exactly (native Mollweide, 100 m pixels =
+# 0.01 km²): at y0 == y1 the change terms are 0 and only the y0 stock/footprint/
+# density fields are meaningful.
+growth_stats <- function(a, y0, y1) {
+  r <- a$total_native
+  if (is.null(r)) return(NULL)
+  yn <- names(r)
+  if (!(as.character(y0) %in% yn) || !(as.character(y1) %in% yn)) return(NULL)
+  PIXEL_KM2 <- 0.01
+  r0 <- r[[as.character(y0)]]
+  r1 <- r[[as.character(y1)]]
+  s  <- function(x) sum(terra::values(x), na.rm = TRUE)
+  bu0 <- s(r0) / 1e6
+  bu1 <- s(r1) / 1e6
+  fp0 <- sum(terra::values(r0) > 0, na.rm = TRUE) * PIXEL_KM2
+  fp1 <- sum(terra::values(r1) > 0, na.rm = TRUE) * PIXEL_KM2
+  sprawl <- s(terra::ifel(r0 == 0 & r1 > 0,  r1,      0)) / 1e6
+  intens <- s(terra::ifel(r0 > 0  & r1 > r0, r1 - r0, 0)) / 1e6
+  chg    <- sprawl + intens
+  list(
+    bu0 = bu0, bu1 = bu1,
+    footprint_0 = fp0, footprint_1 = fp1,
+    sprawl_km2 = sprawl, intens_km2 = intens,
+    sprawl_share   = if (chg > 0) sprawl / chg else NA_real_,
+    density_0      = if (fp0 > 0) bu0 / fp0 else NA_real_,
+    density_1      = if (fp1 > 0) bu1 / fp1 else NA_real_,
+    density_change = if (fp0 > 0 && fp1 > 0) bu1 / fp1 - bu0 / fp0 else NA_real_
   )
 }
 
@@ -337,7 +464,7 @@ map_sidebar <- sidebar(
     div(class = "d-flex gap-2",
       selectInput("yr_start", "From",
                   choices  = epochs[-length(epochs)],
-                  selected = 2000,
+                  selected = 1990,
                   width    = "50%"),
       selectInput("yr_end", "To",
                   choices  = epochs[-1],
@@ -381,7 +508,7 @@ ts_sidebar <- sidebar(
                  "Per 1,000 residents"    = "pop"
                ),
                selected = "idx"),
-  helpText("NTL intensity and unlit share are always shown in absolute units.")
+  helpText("Population (GHS-POP), mean NTL and dark/dim share are always shown in absolute units.")
 )
 
 ntl_sidebar <- sidebar(
@@ -399,8 +526,7 @@ ntl_sidebar <- sidebar(
               min = 2000, max = 2025, value = 2025, step = 5,
               sep = "", ticks = TRUE,
               animate = animationOptions(interval = 3500, loop = TRUE)),
-  helpText("Press play to step through 2000, 2005, …, 2025. ",
-           "NTL for 2025 uses 2024 data (most recent available).")
+  helpText("Press play to step through 2000, 2005, …, 2025.")
 )
 
 ui <- page_navbar(
@@ -443,7 +569,7 @@ ui <- page_navbar(
       sidebar = ts_sidebar,
       div(
         style = "overflow-y: auto; height: 85vh;",
-        plotOutput("ts_plot", height = "900px")
+        plotOutput("ts_plot", height = "820px")
       )
     )
   ),
@@ -452,9 +578,16 @@ ui <- page_navbar(
     div(
       style = "padding: 12px",
       div(
-        style = "margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center",
-        h5("Built-up growth ranking — 100 largest African agglomerations", style = "margin: 0"),
-        downloadButton("dl_table", "Download CSV", class = "btn-sm btn-outline-secondary")
+        style = "margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap",
+        h5("Rankings — 100 largest African agglomerations", style = "margin: 0"),
+        div(
+          style = "display: flex; align-items: center; gap: 12px",
+          radioButtons("rank_view", NULL,
+                       choices  = names(rank_tables),
+                       selected = "Built-up",
+                       inline   = TRUE),
+          downloadButton("dl_table", "Download CSV", class = "btn-sm btn-outline-secondary")
+        )
       ),
       DT::dataTableOutput("league_table")
     )
@@ -484,7 +617,7 @@ ui <- page_navbar(
       h3("Urban Africa — methodology & data sources"),
       p(
         "This app tracks urban built-up expansion across the ",
-        tags$b("100 largest African agglomerations"), " (by 2020 population) from 2000 to 2025.",
+        tags$b("100 largest African agglomerations"), " (by 2020 population) from 1990 to 2025.",
         " It combines satellite-derived built-up surface data with nighttime light (NTL) composites",
         " to characterise both the ", em("extent"), " and the ", em("form"), " of urban growth —",
         " distinguishing sprawl from densification and lit (formal) from unlit (informal) built-up."
@@ -499,28 +632,30 @@ ui <- page_navbar(
           " Choose between a single-year snapshot or the change between any two epochs.",
           " Change can be shown as the ", tags$b("intensive margin"), " (densification within",
           " the existing footprint) or the ", tags$b("extensive margin"), " (greenfield expansion).",
-          " The info panel shows built-up totals, sprawl decomposition, tree cover, and population."
+          " The info panel is dynamic: built-up stock, increase, population (GHS-POP), sprawl",
+          " decomposition and density trend all follow the selected From→To years; tree cover is 2020."
         ),
         tags$dt(tags$b("Nighttime Lights")),
         tags$dd(
-          "Annual NTL intensity raster (log-scaled, capped at 200 nW/cm²/sr) or a pixel-level",
-          " lit / unlit classification for any epoch 2000–2025.",
-          " The info panel shows city-level NTL means and unlit built-up shares for 2020 and 2024."
+          "NTL intensity raster (log-scaled, capped at DN 200 on the corrected-DN scale) or a",
+          " pixel-level unlit / dim / bright classification of built-up for any epoch 2000–2025.",
+          " The info panel shows city-level mean NTL and dark-or-dim built-up shares for 2000 and 2025."
         ),
         tags$dt(tags$b("Time Series")),
         tags$dd(
-          "Multi-city line charts for built-up area (total, residential, or non-residential),",
-          " mean NTL intensity, and unlit built-up share.",
-          " Built-up can be shown in absolute km², as a growth index (2000 = 100),",
-          " or per 1,000 residents.",
+          "A 2×2 grid of multi-city line charts: built-up area (total, residential, or",
+          " non-residential), population (GHS-POP), mean NTL (corrected DN), and dark-or-dim",
+          " built-up share. Built-up can be shown in absolute km², as a growth index (1990 = 100),",
+          " or per 1,000 residents (time-varying GHS-POP denominator).",
           " Use the country / city picker and ", tags$em("Add to comparison"), " button to build",
           " a custom comparison set."
         ),
         tags$dt(tags$b("Rankings")),
         tags$dd(
           "Sortable table of all 100 agglomerations with built-up extent (2000 & 2025),",
-          " absolute and percentage growth, sprawl share, density change, tree cover, and",
-          " unlit built-up share. Filterable and downloadable as CSV."
+          " absolute and percentage growth, sprawl share, density change, GHS-POP population and",
+          " growth, built-up per capita, tree cover, and dark-or-dim built-up share.",
+          " Filterable and downloadable as CSV."
         ),
         tags$dt(tags$b("Scatterplots")),
         tags$dd(
@@ -539,7 +674,7 @@ ui <- page_navbar(
           " Global Human Settlement Layer, European Commission Joint Research Centre.",
           " Built-up surface area in m² per 100 m × 100 m pixel, provided in equal-area",
           " Mollweide projection (EPSG:54009).",
-          " Six epochs: 2000, 2005, 2010, 2015, 2020, 2025.",
+          " Eight epochs: 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025.",
           " Separate layers for total, residential, and non-residential built-up.",
           " The 2025 layer is model-extrapolated, not directly observed."
         ),
@@ -547,20 +682,33 @@ ui <- page_navbar(
           tags$b("Africapolis 2020 (agglomeration boundaries):"),
           " Urban agglomeration polygons, 2020 population estimates, and tree-cover percentage",
           " for African agglomerations (OECD/Sahel and West Africa Club, SWAC).",
-          " Provides the spatial units used to aggregate all raster statistics."
+          " Provides the spatial units used to aggregate all raster statistics.",
+          " Polygon geometry for the top-100 set is repaired (ring-winding and degenerate-vertex",
+          " fixes) before extraction. Two agglomerations are excluded and replaced by the",
+          " next-ranked: ", tags$b("Kisumu"), " (Africapolis defines it as a ~15.5-million-person,",
+          " ~21,000 km² Lake-Victoria settlement continuum, not a coherent metro) and ",
+          tags$b("Port Harcourt"), " (Niger-Delta gas-flare masking zeroes its corrected",
+          " nighttime-light signal in every year)."
         ),
         tags$li(
-          tags$b("NASA Black Marble VNL v2.2 (VIIRS, 2013–2024):"),
-          " Annual nighttime light composites at ~500 m resolution from the",
-          " Visible Infrared Imaging Radiometer Suite (VIIRS) aboard Suomi-NPP / NOAA-20.",
-          " Radiometrically corrected and cloud-screened."
+          tags$b("Bloom- and top-coding-corrected DMSP nighttime lights"),
+          " (Chiovelli, Michalopoulos, Papaioannou & Regan, 2026 — ",
+          tags$em("Illuminating the Global South"), "):",
+          " annual DMSP-OLS composites, 1992–2025, ~1 km, corrected for the two principal DMSP",
+          " artefacts — ", tags$em("blooming"), " (light spilling beyond its physical source) and ",
+          tags$em("top-coding"), " (bright urban cores saturating at the sensor's digital-number",
+          " ceiling of 63). Values are on a corrected / extended digital-number (DN) scale, not",
+          " radiance. This single corrected series replaces the earlier DMSP-OLS + VIIRS blend and",
+          " needs no cross-sensor harmonisation; 2025 is native (no proxy year)."
         ),
         tags$li(
-          tags$b("Li et al. (2020) — harmonised DMSP-OLS (2000–2013):"),
-          " Intercalibrated annual composites from the Defense Meteorological Satellite Program",
-          " Operational Linescan System (DMSP-OLS), harmonised to reduce inter-satellite",
-          " and inter-annual inconsistencies.",
-          " Bridges the pre-VIIRS period; the 2013 overlap year is used to align the two series."
+          tags$b("GHSL GHS-POP R2023A (residential population):"),
+          " Modelled population per 100 m pixel, sharing the grid, Mollweide CRS (EPSG:54009) and",
+          " 5-year epochs (1990–2025) of the built-up layer, summed within each agglomeration",
+          " polygon. Drives the population time-series and the per-capita built-up figures.",
+          tags$em(" Caveat:"), " GHS-POP is spatially disaggregated ", tags$em("using"),
+          " the GHSL built-up layer, so any per-capita built-up density derived from the two is",
+          " partly circular."
         )
       ),
 
@@ -589,13 +737,15 @@ ui <- page_navbar(
         )
       ),
 
-      tags$h5("Sprawl decomposition (2000–2025)"),
+      tags$h5("Sprawl decomposition"),
       p(
         "Total growth is decomposed into sprawl (extensive) and densification (intensive) km².",
         " The ", tags$b("sprawl share"), " is the fraction of net new built-up surface that",
         " came from new pixels rather than intensification of existing ones.",
         " A shrinkage component (pixels where surface declined) is tracked separately but",
-        " is negligible for most cities."
+        " is negligible for most cities.",
+        " The Rankings table reports the full 1990–2025 decomposition; the Urban Growth info",
+        " box recomputes it for whichever From→To years are selected."
       ),
 
       tags$h5("Density trend"),
@@ -605,27 +755,32 @@ ui <- page_navbar(
         " A rising density index means built-up surface is growing faster than the footprint —",
         " the city is filling in. A falling index means the footprint is expanding faster than",
         " the surface — built form is spreading thin.",
-        " The ", tags$b("density change"), " reported in the app is the 2025 index minus the 2000 index;"  ,
+        " The ", tags$b("density change"), " is the end-year index minus the start-year index",
+        " (1990–2025 in Rankings, the selected range in the info box);",
         " positive = densifying, negative = sprawling."
       ),
 
       tags$h5("Nighttime light classification"),
       p(
-        "Each built-up pixel is classified as ", tags$b("lit"), " (NTL > 0.5 nW/cm²/sr) or",
-        tags$b(" unlit"), " based on the annual NTL composite for the same year.",
-        " The 0.5 nW/cm²/sr threshold is the standard lit/unlit boundary used in the",
-        " Black Marble product documentation.",
-        " Unlit built-up serves as a proxy for informal or low-density settlements that",
-        " lack sufficient artificial lighting to be detected by VIIRS.",
-        " NTL maps are displayed on a log₁p scale (values capped at 200 nW/cm²/sr)",
-        " to spread the low-value pixels that dominate African cities."
+        "Each built-up pixel is classed by its corrected DN in the matching year: ",
+        tags$b("unlit"), " (DN = 0), ", tags$b("dim"), " (DN 1–10, the DMSP “marginal light”",
+        " range) or ", tags$b("bright"), " (DN > 10).",
+        " Because the blooming correction removes the dim halo that a radiance threshold used to",
+        " filter out, a bare lit / unlit split at DN > 0 saturates for large agglomerations by",
+        " 2025. The app therefore reports a ", tags$b("dark-or-dim share"), " (DN ≤ 10 as a",
+        " fraction of built-up), which retains a meaningful, declining trend — roughly 44% → 14%",
+        " of built-up across the top 100 between 2000 and 2025.",
+        " Unlit / dim built-up is a proxy for informal or low-density settlement below the DMSP",
+        " detection floor.",
+        " NTL maps use a log₁p scale (DN capped at 200) to spread the low-value pixels that",
+        " dominate African cities."
       ),
 
       p(
         tags$em(
-          "Note: for 2025 figures, the most recent available NTL year (2024) is used as a proxy.",
-          " DMSP-OLS (2000–2012) and VIIRS (2013–2024) DN values are not directly comparable;",
-          " the Li et al. harmonisation reduces, but does not eliminate, sensor discontinuities."
+          "Note: the corrected DMSP series is annual and native through 2025, so no proxy year",
+          " is used. Early-1990s composites are noisier than later years; the time-series panels",
+          " start at 2000 for comparability with the built-up series."
         ),
         style = "font-size:12px; color:#666; border-left:3px solid #ddd; padding-left:10px; margin-top:4px"
       ),
@@ -634,7 +789,8 @@ ui <- page_navbar(
       h4("Units & display scales"),
       tags$ul(
         tags$li("All area figures: ", tags$b("km²")),
-        tags$li("NTL intensity: ", tags$b("nW/cm²/sr"), " (nanowatts per cm² per steradian)"),
+        tags$li("NTL intensity: ", tags$b("corrected DN"),
+                " (bloom- and top-coding-corrected DMSP digital number; not radiance)"),
         tags$li(
           "Built-up change maps: ", tags$b("sqrt scale"),
           " — the raw change distribution is heavily right-skewed (most pixels show modest change;",
@@ -643,7 +799,7 @@ ui <- page_navbar(
         ),
         tags$li(
           "NTL intensity maps: ", tags$b("log₁p scale"),
-          " — most urban pixels in Africa sit below ~30 nW/cm²/sr;",
+          " — most urban pixels in Africa sit below ~DN 60;",
           " a linear scale would render the majority near-black."
         )
       )
@@ -736,6 +892,7 @@ server <- function(input, output, session) {
 
     if (input$map_mode == "single") {
       yr <- as.character(input$yr_single)
+      y0 <- y1 <- yr
       r_res      <- a$res_stack[[yr]]
       r_nres     <- a$nres_stack[[yr]]
       title_res  <- sprintf("Residential built-up<br>(m&sup2;/pixel, %s)<br><em>sqrt scale</em>",  yr)
@@ -771,18 +928,28 @@ server <- function(input, output, session) {
       brks   <- legend_brks
     }
 
+    y0i <- as.integer(y0); y1i <- as.integer(y1)
+    bu_lookup <- function(yy) {
+      v <- ts_data$area_total_km2[ts_data$slug == input$city & ts_data$year == yy]
+      if (length(v)) v[1] else NA_real_
+    }
+    pop_lookup <- function(yy) {
+      v <- pop_ts_data$pop[pop_ts_data$slug == input$city & pop_ts_data$year == yy]
+      if (length(v)) v[1] else NA_real_
+    }
+    gs <- growth_stats(a, y0i, y1i)
+
     info_html <- city_info_html(
-      name           = bb$agglosname,
-      km2_2000       = bb$total_km2_2000,
-      km2_2025       = bb$total_km2_2025,
-      delta          = bb$delta_total_km2_2000_2025,
-      pct            = bb$pct_growth,
-      tree_cov       = tree_cov,
-      pop2020        = bb$pop2020,
-      sprawl_km2     = bb$sprawl_km2,
-      intens_km2     = bb$intens_km2,
-      sprawl_share   = bb$sprawl_share,
-      density_change = bb$density_change
+      name     = bb$agglosname,
+      mode     = input$map_mode,
+      y0       = y0i,
+      y1       = y1i,
+      bu_y0    = bu_lookup(y0i),
+      bu_y1    = bu_lookup(y1i),
+      pop_y0   = pop_lookup(y0i),
+      pop_y1   = pop_lookup(y1i),
+      tree_cov = tree_cov,
+      gs       = gs
     )
 
     leaflet() |>
@@ -856,11 +1023,11 @@ server <- function(input, output, session) {
     bb <- ntl_city_bb(); req(nrow(bb) == 1)
 
     info_html <- as.character(ntl_info_html(
-      name        = bb$agglosname,
-      ntl_2020    = bb$ntl_mean_2020,
-      ntl_2024    = bb$ntl_mean_2024,
-      unlit_2000  = bb$unlit_share_2000,
-      unlit_2025  = bb$unlit_share_2025
+      name         = bb$agglosname,
+      ntl_2000     = bb$ntl_mean_2000,
+      ntl_2025     = bb$ntl_mean_2025,
+      darkdim_2000 = bb$darkdim_share_2000,
+      darkdim_2025 = bb$darkdim_share_2025
     ))
 
     leafletProxy("ntl_map") |>
@@ -888,14 +1055,14 @@ server <- function(input, output, session) {
       removeControl("ntl_badge")
 
     if (input$ntl_layer == "ntl") {
-      avail  <- as.integer(names(a$ntl_stack))         # annual 2000..2024
-      ntl_yr <- min(if (yr >= 2025) 2024L else yr, max(avail))
+      avail  <- as.integer(names(a$ntl_stack))         # annual 1992..2025
+      ntl_yr <- min(max(yr, min(avail)), max(avail))
       r <- raster::raster(a$ntl_stack[[as.character(ntl_yr)]])
       v <- raster::values(r); v[v <= 0] <- NA
       r <- raster::setValues(r, log1p(pmin(v, NTL_UPPER)))
       p |> addRasterImage(r, colors = pal_ntl, opacity = 0.8,
                           maxBytes = Inf, group = "NTL")
-      badge <- if (yr >= 2025) "2025 · 2024 data" else as.character(yr)
+      badge <- as.character(yr)
     } else {
       ep <- as.character(yr)                           # lu_stack has 2000..2025
       if (!(ep %in% names(a$lu_stack))) ep <- tail(names(a$lu_stack), 1)
@@ -929,15 +1096,15 @@ server <- function(input, output, session) {
 
     if (input$ntl_layer == "ntl") {
       p |> addLegend(layerId  = "ntl_legend",
-                     colors   = pal_ntl(log1p(NTL_BREAKS)),
+                     colors   = pal_ntl(pmin(log1p(NTL_BREAKS), log1p(NTL_UPPER))),
                      labels   = NTL_LABELS,
-                     title    = sprintf("NTL intensity<br>(nW/cm&sup2;/sr)<br><em>log, cap %d</em>", NTL_UPPER),
+                     title    = sprintf("Mean NTL<br>(corrected DN)<br><em>log, cap %d</em>", NTL_UPPER),
                      position = "bottomleft")
     } else {
       p |> addLegend(layerId  = "ntl_legend",
-                     colors   = c("#e34a33", "#fee391"),
-                     labels   = c("Built — unlit", "Built — lit"),
-                     title    = "Built-up type",
+                     colors   = LU_COLS,
+                     labels   = LU_LABELS,
+                     title    = "Built-up light class",
                      position = "bottomleft")
     }
   })
@@ -980,7 +1147,7 @@ server <- function(input, output, session) {
       city_order
     )
 
-    # GHSL data (6 epochs: 2000–2025)
+    # GHSL data (8 epochs: 1990–2025)
     df_ghsl <- ts_data |>
       dplyr::filter(slug %in% selected_slugs) |>
       dplyr::mutate(agglosname = factor(agglosname, levels = city_order))
@@ -1001,28 +1168,38 @@ server <- function(input, output, session) {
         ) |>
         dplyr::select(-b_tot, -b_res, -b_nres)
     } else if (scl == "pop") {
+      # Time-varying GHS-POP denominator (year-matched), not a fixed pop2020.
       df_ghsl <- df_ghsl |>
-        dplyr::left_join(city_index |> dplyr::select(slug, pop2020), by = "slug") |>
+        dplyr::left_join(pop_ts_data |> dplyr::select(slug, year, pop),
+                         by = c("slug", "year")) |>
         dplyr::mutate(
-          area_total_km2 = area_total_km2 / (pop2020 / 1000),
-          area_res_km2   = area_res_km2   / (pop2020 / 1000),
-          area_nres_km2  = area_nres_km2  / (pop2020 / 1000)
-        )
+          area_total_km2 = area_total_km2 / (pop / 1000),
+          area_res_km2   = area_res_km2   / (pop / 1000),
+          area_nres_km2  = area_nres_km2  / (pop / 1000)
+        ) |>
+        dplyr::select(-pop)
     }
 
     ghsl_units <- switch(scl,
       abs = "km²",
-      idx = "index (2000 = 100)",
+      idx = "index (1990 = 100)",
       pop = "km² per 1,000 res."
     )
 
-    # NTL data (annual 2000–2024)
+    # NTL data — clipped to 2000–2025 to align with the built-up / population
+    # panels (the corrected DMSP series runs 1992–2025; pre-2000 is noisier).
     df_ntl <- ntl_ts_data |>
-      dplyr::filter(slug %in% selected_slugs) |>
+      dplyr::filter(slug %in% selected_slugs, year >= 2000) |>
       dplyr::mutate(
-        agglosname = factor(agglosname, levels = city_order),
-        unlit_pct  = unlit_share * 100
+        agglosname  = factor(agglosname, levels = city_order),
+        darkdim_pct = darkdim_share * 100
       )
+
+    # Population data (GHS-POP, 1990–2025)
+    df_pop <- pop_ts_data |>
+      dplyr::filter(slug %in% selected_slugs) |>
+      dplyr::mutate(agglosname = factor(agglosname, levels = city_order),
+                    pop_m      = pop / 1e6)
 
     make_panel <- function(df, y, y_label, x_breaks, caption = NULL) {
       ggplot(df, aes(year, .data[[y]], colour = agglosname)) +
@@ -1037,8 +1214,8 @@ server <- function(input, output, session) {
               plot.caption = element_text(size = 8, colour = "grey55", hjust = 0))
     }
 
-    ghsl_brks <- c(2000, 2005, 2010, 2015, 2020, 2025)
-    ntl_brks  <- seq(2000, 2024, by = 4)
+    ghsl_brks <- c(1990, 2000, 2010, 2020, 2025)   # built-up + population panels span 1990–2025
+    ntl_brks  <- c(2000, 2005, 2010, 2015, 2020, 2025)
 
     builtup_col   <- switch(input$ts_builtup_type,
       total = "area_total_km2",
@@ -1052,42 +1229,60 @@ server <- function(input, output, session) {
     )
 
     p_builtup <- make_panel(df_ghsl, builtup_col, builtup_label, ghsl_brks,
-                            caption = "Source: GHSL R2023")
+                            caption = "Source: GHSL-BUILT-S R2023")
+    p_pop     <- make_panel(df_pop, "pop_m",
+                            "Population (millions)", ghsl_brks,
+                            caption = "Source: GHSL GHS-POP R2023A")
     p_ntl     <- make_panel(df_ntl, "ntl_mean",
-                            "NTL intensity (nW/cm²/sr)", ntl_brks,
-                            caption = "Source: NASA Black Marble VNL v2.2 / Li et al. (2020)")
-    p_unlit   <- make_panel(df_ntl, "unlit_pct",
-                            "Unlit built-up share (%)", ntl_brks)
+                            "Mean NTL (corrected DN)", ntl_brks,
+                            caption = "Source: DMSP bloom/top-code-corrected (Chiovelli et al. 2026)")
+    p_darkdim <- make_panel(df_ntl, "darkdim_pct",
+                            "Dark or dim built-up share (%)", ntl_brks)
 
-    patchwork::wrap_plots(p_builtup, p_ntl, p_unlit, ncol = 1) +
+    patchwork::wrap_plots(p_builtup, p_pop, p_ntl, p_darkdim, ncol = 2) +
       patchwork::plot_layout(guides = "collect") &
       theme(legend.position = "right")
   })
 
   # --- Rankings tab -----------------------------------------------------------
+  rank_df <- reactive({
+    view <- if (isTRUE(input$rank_view %in% names(rank_tables))) input$rank_view else "Built-up"
+    rank_tables[[view]]
+  })
+
   output$league_table <- DT::renderDataTable({
-    DT::datatable(
-      league_df,
+    df       <- rank_df()
+    bar_col  <- unname(rank_sort[if (isTRUE(input$rank_view %in% names(rank_sort))) input$rank_view else "Built-up"])
+    bar_idx  <- match(bar_col, names(df)) - 1L   # 0-based for DT
+
+    dt <- DT::datatable(
+      df,
       rownames   = FALSE,
       filter     = "top",
       options    = list(
         pageLength = 25,
-        order      = list(list(6L, "desc"))
+        order      = list(list(bar_idx, "desc"))
       )
-    ) |>
-      DT::formatStyle(
-        "Growth (%)",
-        background         = DT::styleColorBar(
-          range(league_df[["Growth (%)"]], na.rm = TRUE), "#b2e2f7"),
+    )
+    if (!is.na(bar_idx) && is.numeric(df[[bar_col]])) {
+      dt <- dt |> DT::formatStyle(
+        bar_col,
+        background         = DT::styleColorBar(range(df[[bar_col]], na.rm = TRUE), "#b2e2f7"),
         backgroundSize     = "98% 60%",
         backgroundRepeat   = "no-repeat",
         backgroundPosition = "center"
       )
+    }
+    dt
   }, server = FALSE)
 
   output$dl_table <- downloadHandler(
-    filename = function() paste0("urban_africa_rankings_", Sys.Date(), ".csv"),
-    content  = function(file) write.csv(league_df, file, row.names = FALSE)
+    filename = function() {
+      v   <- if (isTRUE(input$rank_view %in% names(rank_tables))) input$rank_view else "built up"
+      tag <- gsub("[^a-z]+", "_", tolower(v))
+      paste0("urban_africa_rankings_", tag, "_", Sys.Date(), ".csv")
+    },
+    content  = function(file) write.csv(rank_df(), file, row.names = FALSE)
   )
 
   # --- Scatterplots tab -------------------------------------------------------
@@ -1095,28 +1290,28 @@ server <- function(input, output, session) {
 
     if (input$scatter_type == "extent_growth") {
       df <- city_index |>
-        dplyr::filter(!is.na(pop2020), !is.na(total_km2_2000),
-                      !is.na(delta_total_km2_2000_2025))
+        dplyr::filter(!is.na(pop2020), !is.na(total_km2_1990),
+                      !is.na(delta_total_km2_1990_2025))
 
       p <- ggplot(df,
-                  aes(x      = total_km2_2000,
-                      y      = delta_total_km2_2000_2025,
+                  aes(x      = total_km2_1990,
+                      y      = delta_total_km2_1990_2025,
                       size   = pop2020 / 1e6,
-                      colour = subregion,
+                      colour = macro_region,
                       text   = paste0(
                         agglosname, " (", iso3, ")\n",
-                        "Built-up 2000: ", round(total_km2_2000, 0), " km²\n",
-                        "Growth 2000–2025: +", round(delta_total_km2_2000_2025, 0),
+                        "Built-up 1990: ", round(total_km2_1990, 0), " km²\n",
+                        "Growth 1990–2025: +", round(delta_total_km2_1990_2025, 0),
                         " km²", sprintf(" (+%.0f%%)", pct_growth * 100)
                       ))) +
         geom_point(alpha = 0.8) +
         scale_x_continuous(labels = scales::label_comma(), trans = "sqrt") +
         scale_y_continuous(labels = scales::label_comma(), trans = "sqrt") +
         scale_size_continuous(name = "Pop. 2020\n(millions)", range = c(2, 12)) +
-        scale_colour_viridis_d(option = "D", end = 0.9, name = "Sub-region") +
+        scale_colour_viridis_d(option = "D", end = 0.9, name = "Region", drop = FALSE) +
         labs(
-          x     = "Built-up extent 2000 (km², sqrt scale)",
-          y     = "Built-up growth 2000–2025 (km², sqrt scale)",
+          x     = "Built-up extent 1990 (km², sqrt scale)",
+          y     = "Built-up growth 1990–2025 (km², sqrt scale)",
           title = "Initial built-up extent vs. growth — 100 largest African agglomerations"
         ) +
         theme_minimal(base_size = 13) +
@@ -1129,8 +1324,8 @@ server <- function(input, output, session) {
       p <- ggplot(df,
                   aes(x      = intens_km2,
                       y      = sprawl_km2,
-                      size   = delta_total_km2_2000_2025,
-                      colour = subregion,
+                      size   = delta_total_km2_1990_2025,
+                      colour = macro_region,
                       text   = paste0(
                         agglosname, " (", iso3, ")\n",
                         "New land:        ", round(sprawl_km2, 1),
@@ -1144,11 +1339,11 @@ server <- function(input, output, session) {
         scale_x_continuous(labels = scales::label_comma(), trans = "sqrt") +
         scale_y_continuous(labels = scales::label_comma(), trans = "sqrt") +
         scale_size_continuous(name = "Total growth\n(km²)", range = c(2, 12)) +
-        scale_colour_viridis_d(option = "D", end = 0.9, name = "Sub-region") +
+        scale_colour_viridis_d(option = "D", end = 0.9, name = "Region", drop = FALSE) +
         labs(
           x     = "Densification — growth within existing footprint (km², sqrt scale)",
           y     = "New land — growth on previously unbuilt land (km², sqrt scale)",
-          title = "Sprawl vs. intensification 2000–2025 — above diagonal = sprawl-dominant"
+          title = "Sprawl vs. intensification 1990–2025 — above diagonal = sprawl-dominant"
         ) +
         theme_minimal(base_size = 13) +
         theme(legend.position = "right", panel.grid.minor = element_blank())

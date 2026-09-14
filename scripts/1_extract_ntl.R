@@ -7,22 +7,18 @@ pacman::p_load(
   raster  # needed only for leaflet::addRasterImage()
 )
 
-# 2. Load Africapolis shapefile -------------------------------------------------
-# Urban areas in Africa
-agglom <- st_read(here("data/raw/africapolis/agglomerations.shp")) |>
-  clean_names()
-
-#Urban areas in Africa: largest 100
-agglom_100 <- agglom |>
-  slice_max(pop2020, n = 100) |>   # TEMP: small sample for testing
-  st_make_valid()
+# 2. Canonical top-100 agglomerations -----------------------------------------
+# Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
+agglom_100 <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
 
 # 3. Raster ---------------------------------------------------------------
-ntl_total <- terra::rast(here("data/intermediate/raster/ntl_urbanafrica.tif"))
+# Bloom- + top-coding-corrected DMSP series (Chiovelli, Michalopoulos,
+# Papaioannou & Regan 2026, "Illuminating the Global South"). Annual 1992-2025,
+# ~1 km, layer names are years. Values are corrected/extended DN (0..~2000),
+# NOT nW/cm2/sr. See scripts/0_ntlprep_bltcfix.R.
+ntl_total <- terra::rast(here("data/intermediate/raster/ntl_bltcfix_africa.tif"))
 
 # 4. Extract per-city NTL ------------------------------------------------------
-# Project polygons into NTL raster CRS for extraction.
-# Harmonised DMSP-OLS + VIIRS series (2000–2024); layer names are years.
 agglom_vect <- vect(agglom_100) |> project(crs(ntl_total))
 
 ntl_by_city <- function(stack) {
@@ -39,11 +35,19 @@ ntl_by_city <- function(stack) {
       mutate(year = as.integer(year))
   }
 
+  # Lit = any detected light. The paper's own lit/unlit convention is DN > 0;
+  # the blooming correction is what makes DN > 0 a valid cut (the dim bleed a
+  # 0.5 nW threshold used to filter is already removed). On this corrected
+  # series lit share saturates (~1.0 for large agglomerations by 2025), so we
+  # also carry a "dim" share: 0 < DN <= DIM_MAX. DIM_MAX = 10 sits in the DMSP
+  # "marginal light" range (native DN 0-63); see 1_create_citydata.R.
+  DIM_MAX <- 10
   keys <- c("id", "agglosname", "iso3", "year")
   extract_stat(mean,                                    "ntl_mean") |>
     left_join(extract_stat(sum,                         "ntl_sum"),       by = keys) |>
-    left_join(extract_stat(\(x, na.rm = TRUE) mean(x > 0.5, na.rm = na.rm), "ntl_lit_share"), by = keys) |>
-    dplyr::select(all_of(keys), ntl_mean, ntl_sum, ntl_lit_share)
+    left_join(extract_stat(\(x, na.rm = TRUE) mean(x > 0, na.rm = na.rm),               "ntl_lit_share"),    by = keys) |>
+    left_join(extract_stat(\(x, na.rm = TRUE) mean(x > 0 & x <= DIM_MAX, na.rm = na.rm), "ntl_dimlit_share"), by = keys) |>
+    dplyr::select(all_of(keys), ntl_mean, ntl_sum, ntl_lit_share, ntl_dimlit_share)
 }
 
 agglom_ntl <- ntl_by_city(ntl_total)

@@ -20,22 +20,15 @@ if (!file.exists(pop_path)) {
   stop("Missing ", pop_path, " -- run scripts/0_popprep.R first.")
 }
 
-years <- c(2000, 2005, 2010, 2015, 2020, 2025)
-
-# -- 2. Load Africapolis shapefile -----------------------------------------------
-# Top-100 agglomerations by 2020 population -- the canonical city set used by
-# 1_extract_ntl.R and 1_create_citydata.R. (1_extract_ghsl.R still uses a
-# pop2020 > 100000 filter; unifying the two is a separate cleanup.)
-agglom <- st_read(here("data/raw/africapolis/agglomerations.shp")) |>
-  clean_names()
-
-agglom_100 <- agglom |>
-  slice_max(pop2020, n = 100) |>
-  st_make_valid()
+# -- 2. Canonical top-100 agglomerations ---------------------------------------
+# Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
+agglom_100 <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
 
 # -- 3. Raster -----------------------------------------------------------------
 pop_africa <- terra::rast(pop_path)
-names(pop_africa) <- years
+# Epoch years from the stack band names (set by 0_popprep.R): 6- or 8-epoch set.
+years <- as.integer(names(pop_africa))
+stopifnot(!anyNA(years))
 
 # -- 4. Extract per-city population ------------------------------------------
 # Project polygons into the GHS-POP native CRS for extraction.

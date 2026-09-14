@@ -1,120 +1,95 @@
-#0_prep
-#prepare the GHSL Raster layers: Unzip raster files, read in, stack and crop to Africa extent
-#Global Raster Layers where downloaded here:https://human-settlement.emergency.copernicus.eu/download.php?ds=bu
-#Ran 1-5; not sure if 6-7 are needed: take very long time to calculate and might be too large for shiny
+# 0_ghslprep.R
+# Prepare the GHS-BUILT-S raster stacks: unzip, name-match by epoch, stack,
+# crop to the Africa bounding box.
+#
+# Global rasters: https://human-settlement.emergency.copernicus.eu/download.php?ds=bu
+# Product: GHS_BUILT_S, release R2023A, Mollweide (EPSG:54009), 100 m.
+# Epochs: 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025 (8).
+#
+# Input : data/raw/ghsl/built_s/
+#           GHS_BUILT_S_E<year>_GLOBE_R2023A_54009_100_V1_0.{zip,tif}       (total)
+#           GHS_BUILT_S_NRES_E<year>_GLOBE_R2023A_54009_100_V1_0.{zip,tif}  (non-residential)
+# Output: data/intermediate/raster/{total,nres,res}_africa.tif  (8 bands, names = epoch years)
+#         res = total - nres.
+
 #### 1. Setup ####
-pacman::p_load(
-  tidyverse, terra, sf, here,
-  ggplot2, scales,janitor)
+pacman::p_load(tidyverse, terra, sf, here)
 
-#### 2. List Files####
-#List all zip files in folder and unzip
-zip_files <- list.files(path = here("data/raw/ghsl"), pattern = "\\.zip$", full.names = FALSE)
-#unzip:this takes a while since files are huge
-walk(zip_files, ~unzip(here("data/raw/ghsl", .x), exdir = here("data/raw/ghsl")))
+# Cap terra's RAM budget so 8 global epochs don't OOM the 16 GB box (see
+# 1_create_citydata.R). terra tiles instead of loading whole windows.
+terra::terraOptions(memfrac = 0.35, progress = 0)
 
-#load the NRES GHSL rasters for each year (2000,2005,2010,2015,2020,2025: 6 in total)
-tifs <- list.files(path = here("data/raw/ghsl"), pattern = "\\.tif$", full.names = TRUE)
+built_s_dir <- here("data/raw/ghsl/built_s")
+if (!dir.exists(built_s_dir)) {
+  stop("No GHS-BUILT-S directory at ", built_s_dir,
+       "\nPlace GHS_BUILT_S_E<year>_... and GHS_BUILT_S_NRES_E<year>_... ",
+       "(.zip or .tif) there for 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025.")
+}
 
-#### 3. Load Raster stacks####
-#filter for total built-up: RES + NRES
-total_raster <- terra::rast(tifs[1:6])
+# writeRaster() does not create parent directories.
+dir.create(here("data/intermediate/raster"), showWarnings = FALSE, recursive = TRUE)
 
-#filter for NRES
-nres_raster <- terra::rast(tifs[7:12])
+years <- c(1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025)
 
-#### 4. Cropping####
-#Africa bounding box (wide enough to include Tunis/Algiers in the north,
-# Cape Verde in the west, and Mauritius/Réunion in the east)
+#### 2. Unzip (only what is still missing) ####
+# Each archive holds one <basename>.tif; skip archives already extracted so a
+# re-run does not spend ~30 min re-inflating the 2000-2025 files.
+zip_files <- list.files(built_s_dir, pattern = "\\.zip$", full.names = TRUE)
+for (z in zip_files) {
+  target <- sub("\\.zip$", ".tif", z)
+  if (!file.exists(target)) {
+    message("Unzipping ", basename(z), " ...")
+    unzip(z, exdir = built_s_dir)
+  }
+}
+
+#### 3. Name-match one raster per epoch (never positional indexing) ####
+tifs <- list.files(built_s_dir, pattern = "\\.tif$", full.names = TRUE)
+tifs <- tifs[!grepl("\\.ovr$", tifs)]
+
+pick <- function(nres) {
+  vapply(years, function(y) {
+    pat <- if (nres) sprintf("GHS_BUILT_S_NRES_E%d_", y)
+           else       sprintf("(?<!NRES_)GHS_BUILT_S_E%d_", y)
+    hit <- grep(pat, tifs, value = TRUE, perl = TRUE)
+    if (length(hit) != 1)
+      stop("Expected exactly one raster matching '", pat, "' in ", built_s_dir,
+           " -- found ", length(hit), ".")
+    hit
+  }, character(1))
+}
+
+total_raster <- terra::rast(pick(nres = FALSE))
+nres_raster  <- terra::rast(pick(nres = TRUE))
+names(total_raster) <- years
+names(nres_raster)  <- years
+
+#### 4. Crop to Africa ####
+# Bounding box wide enough for Tunis/Algiers (north), Cape Verde (west) and
+# Mauritius/Reunion (east). Reproject the bbox to GHSL native CRS before crop.
 africa_bbox_sf <- st_bbox(
   c(xmin = -26, ymin = -47, xmax = 64, ymax = 38),
   crs = st_crs(4326)) |> st_as_sfc()
 
-#NRES Africa
-# Reproject bbox to match GHSL native CRS for masking
-africa_vect <- vect(africa_bbox_sf) |> project(crs(nres_raster))
+africa_vect <- vect(africa_bbox_sf) |> project(crs(total_raster))
 
-#crop and mask
-nres_africa <- nres_raster |>
-  terra::crop(africa_vect)
+total_africa <- terra::crop(total_raster, africa_vect)
+nres_africa  <- terra::crop(nres_raster,  africa_vect)
+names(total_africa) <- years
+names(nres_africa)  <- years
 
-#adjust raster names
-names(nres_africa) <- c(2000,2005,2010,2015,2020,2025)
-
-#plot
-plot(nres_africa[[1]])
-
-#Total GHSL
-total_africa <- total_raster |>
-  terra::crop(africa_vect)
-
-#plot
-plot(total_africa[[1]])
-
-#change names
-names(total_africa) <- c(2000,2005,2010,2015,2020,2025)
-
-#create RES stack (TOTAL - NRES)
+# RES = TOTAL - NRES
 res_africa <- total_africa - nres_africa
+names(res_africa) <- years
 
-# 5. Save Raster stack ----------------------------------------------------
-#save NRES raster stack: 2000,2005,2010,2015,2020,2025
-writeRaster(nres_africa,filename = paste(here(),
-            "data/intermediate/raster/nres_africa.tif",sep = "/"))
+#### 5. Save ####
+out <- here("data/intermediate/raster")
+terra::writeRaster(total_africa, file.path(out, "total_africa.tif"),
+                   overwrite = TRUE, gdal = "COMPRESS=DEFLATE")
+terra::writeRaster(nres_africa, file.path(out, "nres_africa.tif"),
+                   overwrite = TRUE, gdal = "COMPRESS=DEFLATE")
+terra::writeRaster(res_africa, file.path(out, "res_africa.tif"),
+                   overwrite = TRUE, gdal = "COMPRESS=DEFLATE")
 
-#save RES raster stack
-writeRaster(res_africa,filename = paste(here(),
-            "data/intermediate/raster/res_africa.tif",sep = "/"))
-
-#save TOTAL raster stack
-writeRaster(total_africa,filename = paste(here(),
-            "data/intermediate/raster/total_africa.tif",sep = "/"))
-
-# # 6.Create Metropolitan Area Raster -------------------------------------
-# #crop the three rasters to metropolitan areas
-# #raster objects
-# #TOTAL
-# total_africa <- terra::rast(here("data/intermediate/total_africa.tif"))
-# #NRES
-# nres_africa <- terra::rast(here("data/intermediate/nres_africa.tif"))
-# names(nres_africa) <- c(2000,2005,2010,2015,2020,2025)
-# #RES
-# res_africa <- terra::rast(here("data/intermediate/res_africa.tif"))
-#
-# # Urban areas in Africa above 100,000 pop.
-# agglom <- st_read(here("data/raw/africapolis/agglomerations.shp")) |>
-#   clean_names() |>
-#   filter(pop2020 > 100000)
-#
-# #filter further to test:largest 100 cities
-# agglom_sel <- agglom |>
-#   slice_max(pop2020,n = 100) |>
-#   st_make_valid()
-#
-# #project
-# agglom_vect <- vect(agglom_sel) |> terra::project(crs(nres_africa))
-#
-# #plot simplified version
-# agglom_simple <- simplifyGeom(agglom_vect, tolerance = 100)
-# plot(agglom_simple, border = "red", col = NA)
-#
-# #crop
-# nres_metro <- nres_africa |> terra::crop(agglom_vect,mask = TRUE)
-# res_metro <- res_africa |> crop(agglom_vect,mask = TRUE)
-# total_metro <- total_africa |> crop(agglom_vect,mask = TRUE)
-#
-# # 7. Save Metropolitan raster stacks --------------------------------------
-# #save NRES raster stack: 2000,2005,2010,2015,2020,2025
-# writeRaster(nres_metro,filename = paste(here(),
-#                                          "data/intermediate/nres_metro.tif",sep = "/"))
-#
-# #save RES raster stack
-# writeRaster(res_metro,filename = paste(here(),
-#                                         "data/intermediate/res_metro.tif",sep = "/"))
-#
-# #save TOTAL raster stack
-# writeRaster(total_metro,filename = paste(here(),
-#                                           "data/intermediate/total_metro.tif",sep = "/"))
-
-
-
+cat(sprintf("Wrote total/nres/res_africa.tif  (%d bands: %s)\n",
+            terra::nlyr(total_africa), paste(years, collapse = ", ")))

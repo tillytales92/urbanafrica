@@ -17,7 +17,7 @@ if (!file.exists(builtup_path)) {
 }
 ts_wide <- readRDS(builtup_path)
 
-target_years <- c(2000, 2005, 2010, 2015, 2020, 2025)
+target_years <- c(1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025)
 
 type_palette <- c(
   "Total"           = "#2c3e50",
@@ -34,14 +34,14 @@ ts_long <- ts_wide |>
   pivot_longer(c(Residential, `Non-Residential`, Total),
                names_to = "type", values_to = "area_km2")
 
-# Rank metros by absolute total built-up increase 2000 → 2025
+# Rank metros by absolute total built-up increase 1990 → 2025
 metro_growth <- ts_wide |>
-  filter(year %in% c(2000, 2025)) |>
+  filter(year %in% c(1990, 2025)) |>
   dplyr::select(id, agglosname, iso3, year, area_total_km2) |>
   pivot_wider(names_from = year, values_from = area_total_km2,
               names_prefix = "y") |>
-  mutate(delta_km2 = y2025 - y2000,
-         pct_growth = if_else(y2000 > 0, (y2025 - y2000) / y2000, NA_real_)) |>
+  mutate(delta_km2 = y2025 - y1990,
+         pct_growth = if_else(y1990 > 0, (y2025 - y1990) / y1990, NA_real_)) |>
   arrange(desc(delta_km2))
 
 saveRDS(metro_growth, here("data/intermediate/africapolis_metro_growth.Rds"))
@@ -63,7 +63,7 @@ p_res_nres <- ts_long |>
   scale_y_continuous(labels = label_number(suffix = " km²", big.mark = ",")) +
   labs(
     title    = "Built-Up Area Over Time — Top 16 African Metros",
-    subtitle = "GHSL R2023 (Africapolis, pop2020 > 3M); ranked by absolute total growth 2000–2025",
+    subtitle = "GHSL-BUILT-S R2023 (Africapolis top-100); ranked by absolute total growth 1990–2025",
     x        = NULL,
     y        = "Built-up area",
     colour   = NULL
@@ -127,15 +127,19 @@ p_dist <- ts_wide |>
 ggsave(here("output/africapolis_nres_share_distribution.png"),
        p_dist, width = 10, height = 6, dpi = 300)
 
-# ── 5. NTL plots — annual, 2000–2024 ─────────────────────────────────────────
+# ── 5. NTL plots — annual, clipped to 2000–2025 ─────────────────────────────
+# Corrected DMSP (Chiovelli et al. 2026): values are corrected DN, not radiance.
+# ntl_lit_share (DN > 0) saturates for large metros, so use the dark-or-dim
+# share (DN <= 10 = (1 - lit) + dimlit). Pre-2000 DMSP is noisier -> start 2000.
 ntl_path <- here("data/intermediate/africapolis_ntl.Rds")
 if (!file.exists(ntl_path)) {
   warning("Missing ", ntl_path,
           " — skipping NTL plots. Run scripts/1_extract_ntl.R first.")
 } else {
   ntl_long <- readRDS(ntl_path) |>
-    mutate(unlit_share = 1 - ntl_lit_share,
-           label       = paste0(agglosname, " (", iso3, ")"))
+    filter(year >= 2000) |>
+    mutate(darkdim_share = (1 - ntl_lit_share) + ntl_dimlit_share,
+           label         = paste0(agglosname, " (", iso3, ")"))
 
   # Same facet ordering as the built-up plots, restricted to top_cities
   ntl_top <- ntl_long |>
@@ -143,7 +147,7 @@ if (!file.exists(ntl_path)) {
     mutate(label = factor(label,
                           levels = unique(label[order(match(agglosname, top_cities))])))
 
-  ntl_year_breaks <- c(2000, 2005, 2010, 2015, 2020, 2024)
+  ntl_year_breaks <- c(2000, 2005, 2010, 2015, 2020, 2025)
 
   # 5a. Mean NTL radiance over time
   p_ntl_mean <- ggplot(ntl_top, aes(year, ntl_mean)) +
@@ -154,9 +158,9 @@ if (!file.exists(ntl_path)) {
     scale_y_continuous(labels = label_number(big.mark = ",")) +
     labs(
       title    = "Nighttime Lights Over Time — Top 16 African Metros",
-      subtitle = "Mean NTL radiance per agglomeration (harmonised DMSP-OLS + VIIRS, 2000–2024)",
+      subtitle = "Mean corrected-DN per agglomeration (bloom/top-code-corrected DMSP, Chiovelli et al. 2026, 2000–2025)",
       x        = NULL,
-      y        = "Mean NTL (nW/cm²/sr)"
+      y        = "Mean NTL (corrected DN)"
     ) +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank(),
@@ -165,18 +169,18 @@ if (!file.exists(ntl_path)) {
   ggsave(here("output/africapolis_ntl_mean_top16.png"),
          p_ntl_mean, width = 13, height = 9, dpi = 300)
 
-  # 5b. Share of unlit area over time
-  p_unlit <- ggplot(ntl_top, aes(year, unlit_share)) +
+  # 5b. Share of dark-or-dim area over time
+  p_unlit <- ggplot(ntl_top, aes(year, darkdim_share)) +
     geom_line(linewidth = 0.9, colour = "#34495e") +
     geom_point(size = 1.6, colour = "#34495e") +
     facet_wrap(~ label, ncol = 4, scales = "free_y") +
     scale_x_continuous(breaks = ntl_year_breaks) +
     scale_y_continuous(labels = label_percent(accuracy = 1)) +
     labs(
-      title    = "Unlit Share Over Time — Top 16 African Metros",
-      subtitle = "Share of agglomeration pixels below the NTL threshold (≈0.5 nW/cm²/sr)",
+      title    = "Dark-or-Dim Share Over Time — Top 16 African Metros",
+      subtitle = "Share of agglomeration pixels with corrected DN ≤ 10 (dark or DMSP 'marginal light')",
       x        = NULL,
-      y        = "Unlit share"
+      y        = "Dark-or-dim share"
     ) +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank(),
@@ -185,17 +189,17 @@ if (!file.exists(ntl_path)) {
   ggsave(here("output/africapolis_unlit_share_top16.png"),
          p_unlit, width = 13, height = 9, dpi = 300)
 
-  # 5c. Continent-wide distribution of unlit share by year
+  # 5c. Continent-wide distribution of dark-or-dim share by year
   p_unlit_dist <- ntl_long |>
-    filter(!is.na(unlit_share)) |>
-    ggplot(aes(factor(year), unlit_share)) +
+    filter(!is.na(darkdim_share)) |>
+    ggplot(aes(factor(year), darkdim_share)) +
     geom_boxplot(outlier.size = 0.6, fill = "#34495e", alpha = 0.4) +
     scale_y_continuous(labels = label_percent(accuracy = 1)) +
     labs(
-      title    = "Unlit Share Across African Metros",
+      title    = "Dark-or-Dim Share Across African Metros",
       subtitle = "Africapolis top-100; each box = all metros for that year",
       x        = NULL,
-      y        = "Unlit share"
+      y        = "Dark-or-dim share"
     ) +
     theme_minimal(base_size = 13) +
     theme(panel.grid.minor = element_blank())

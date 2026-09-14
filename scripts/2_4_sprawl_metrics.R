@@ -1,16 +1,16 @@
 # 2_4_sprawl_metrics.R
 # Computes sprawl vs intensification metrics for all cities.
 #
-# Decomposition (full period 2000->2025, using total built-up surface):
-#   Sprawl (extensive margin) : pixels that were 0 in 2000 and >0 in 2025
-#   Intensification (intensive): pixels that were >0 in 2000 and increased
+# Decomposition (full period 1990->2025, using total built-up surface):
+#   Sprawl (extensive margin) : pixels that were 0 in 1990 and >0 in 2025
+#   Intensification (intensive): pixels that were >0 in 1990 and increased
 #   Shrinkage                  : pixels that decreased (usually negligible)
 #
 # All areas in km². Pixel area = 100m x 100m = 0.01 km².
 # Uses native Mollweide stacks (total/res/nres .tif) -- equal-area CRS
 # so summing pixel values and dividing by 1e6 gives km^2 of built-up surface.
 #
-# Also computes a density index: built-up km^2 / footprint km^2 for 2000 and
+# Also computes a density index: built-up km^2 / footprint km^2 for 1990 and
 # 2025. A falling density index means the city is consuming land faster than
 # it is adding built-up surface -- the built form is spreading thin (sprawl).
 #
@@ -40,15 +40,15 @@ compute_city <- function(slug) {
     res  <- rast(file.path(d, "res.tif"))
     nres <- rast(file.path(d, "nres.tif"))
 
-    m_tot  <- margins(tot[["2000"]],  tot[["2025"]])
-    m_res  <- margins(res[["2000"]],  res[["2025"]])
-    m_nres <- margins(nres[["2000"]], nres[["2025"]])
+    m_tot  <- margins(tot[["1990"]],  tot[["2025"]])
+    m_res  <- margins(res[["1990"]],  res[["2025"]])
+    m_nres <- margins(nres[["1990"]], nres[["2025"]])
 
     # Footprint = number of pixels with any built-up surface
-    fp2000 <- sum(values(tot[["2000"]]) > 0, na.rm = TRUE) * PIXEL_KM2
+    fp1990 <- sum(values(tot[["1990"]]) > 0, na.rm = TRUE) * PIXEL_KM2
     fp2025 <- sum(values(tot[["2025"]]) > 0, na.rm = TRUE) * PIXEL_KM2
 
-    bu2000 <- sum(values(tot[["2000"]]), na.rm = TRUE) / 1e6
+    bu1990 <- sum(values(tot[["1990"]]), na.rm = TRUE) / 1e6
     bu2025 <- sum(values(tot[["2025"]]), na.rm = TRUE) / 1e6
 
     tot_change <- m_tot$sprawl + m_tot$intens
@@ -67,11 +67,11 @@ compute_city <- function(slug) {
       sprawl_nres_km2    = m_nres$sprawl,
       intens_nres_km2    = m_nres$intens,
       # Footprint and density trajectory
-      footprint_2000_km2 = fp2000,
+      footprint_1990_km2 = fp1990,
       footprint_2025_km2 = fp2025,
-      density_2000       = if (fp2000 > 0) bu2000 / fp2000 else NA_real_,
+      density_1990       = if (fp1990 > 0) bu1990 / fp1990 else NA_real_,
       density_2025       = if (fp2025 > 0) bu2025 / fp2025 else NA_real_,
-      density_change     = if (fp2000 > 0 & fp2025 > 0) (bu2025 / fp2025) - (bu2000 / fp2000) else NA_real_
+      density_change     = if (fp1990 > 0 & fp2025 > 0) (bu2025 / fp2025) - (bu1990 / fp1990) else NA_real_
     )
   }, error = function(e) {
     message("  FAILED: ", slug, " -- ", conditionMessage(e))
@@ -92,4 +92,4 @@ saveRDS(sprawl_stats, here("data/intermediate/sprawl_stats.Rds"))
 saveRDS(sprawl_stats, here("app/data/sprawl_stats.Rds"))
 message("Done. ", nrow(sprawl_stats), " cities.")
 print(summary(sprawl_stats[, c("sprawl_km2", "intens_km2", "sprawl_share",
-                                "density_2000", "density_2025", "density_change")]))
+                                "density_1990", "density_2025", "density_change")]))
