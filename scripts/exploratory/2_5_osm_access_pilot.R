@@ -11,9 +11,11 @@
 # humanitarian campaigns), not urban form. Comparing *distances within one
 # city* sidesteps that -- mapping effort is roughly constant within a city,
 # even if absolute amenity counts aren't comparable across cities. Piloted
-# on three of the audit's best-covered agglomerations (>1,300 buildings/km2):
-# Lagos (West), Kinshasa (Central -- the most extreme densifier in the
-# 1990-2025 sample, see docs/insights-1990-2025.md SS9), Kampala (East).
+# on seven of the audit's best-covered agglomerations (>1,300 buildings/km2,
+# per the CLAUDE.md shortlist): Lagos (West), Kinshasa (Central -- the most
+# extreme densifier in the 1990-2025 sample, see docs/insights-1990-2025.md
+# SS9), Kampala + Dar es Salaam (East), Khartoum (North/Sudan), Juba + Mogadishu
+# (Horn/South Sudan -- both also among the audit's single best-covered cities).
 #
 # Method:
 #   1. Classify every 100m pixel by 1990->2025 built-up trajectory (mirrors
@@ -25,11 +27,15 @@
 #   4. Population-weighted (GHS-POP 2025) mean distance by growth category --
 #      "did the people added by densification end up closer to, or farther
 #      from, public infrastructure than people added by sprawl?"
+#   5. Same distance raster, cross-tabbed against the 2025 lit_unlit band
+#      (unlit/dim/bright, the NTL-derived informality proxy used elsewhere in
+#      this project) -- "is unlit built-up also farther from public
+#      infrastructure, or are the two signals unrelated?"
 #
 # Consumes:
-#   data/intermediate/cities/<slug>/{pop.tif, total.tif, metro.gpkg}
+#   data/intermediate/cities/<slug>/{pop.tif, total.tif, lit_unlit.tif, metro.gpkg}
 # Produces:
-#   data/intermediate/osm_access_pilot.Rds
+#   data/intermediate/osm_access_pilot.Rds  (list: growth, lit)
 #   output/exploratory/osm_access_<slug>.png
 # --------------------------------------------------------------------------
 
@@ -37,7 +43,8 @@ pacman::p_load(tidyverse, terra, sf, here, httr, jsonlite, scales)
 
 sf::sf_use_s2(FALSE)
 
-pilot_slugs <- c("lagos", "kinshasa", "kampala")
+pilot_slugs <- c("lagos", "kinshasa", "kampala",
+                  "dar_es_salaam", "khartum", "juba", "mogadiscio")
 cities_root <- here("data/intermediate/cities")
 out_dir     <- here("output/exploratory")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
@@ -101,6 +108,8 @@ run_city <- function(slug) {
 
   pop <- terra::rast(file.path(d, "pop.tif"))
   tot <- terra::rast(file.path(d, "total.tif"))
+  lu_f <- file.path(d, "lit_unlit.tif")
+  lit_2025 <- if (file.exists(lu_f)) terra::rast(lu_f)[["2025"]] else NULL
   metro <- sf::st_read(file.path(d, "metro.gpkg"), quiet = TRUE)
   bb <- sf::st_bbox(metro)
   # Overpass bbox order is south,west,north,east (lat,lon,lat,lon).
@@ -180,6 +189,38 @@ run_city <- function(slug) {
 
   print(as.data.frame(summary_tbl), row.names = FALSE, digits = 3)
 
+  # -- Pop-weighted summary by 2025 lit/unlit status -----------------------
+  # lit_unlit.tif: 0 unbuilt, 1 built-unlit (DN=0), 2 built-dim (0<DN<=10),
+  # 3 built-bright (DN>10) -- see CLAUDE.md / app/app.R. Only built pixels.
+  lit_labels <- c(`1` = "Unlit", `2` = "Dim", `3` = "Bright")
+  lit_summary_tbl <- NULL
+  if (!is.null(lit_2025)) {
+    df_lit <- tibble(
+      lit_code   = terra::values(lit_2025)[, 1],
+      pop_2025   = terra::values(pop_2025)[, 1],
+      pop_change = terra::values(pop_change)[, 1],
+      dist_km    = terra::values(dist_combined)[, 1]
+    ) |>
+      filter(lit_code %in% 1:3, !is.na(dist_km)) |>
+      mutate(lit_cat = unname(lit_labels[as.character(lit_code)]))
+
+    lit_summary_tbl <- df_lit |>
+      group_by(lit_cat) |>
+      summarise(
+        n_pixels          = n(),
+        pop_2025_total    = sum(pop_2025, na.rm = TRUE),
+        mean_dist_km      = mean(dist_km, na.rm = TRUE),
+        pop_weighted_dist = weighted.mean(dist_km, w = pmax(pop_2025, 0.001), na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      mutate(slug = slug, .before = 1)
+
+    cat("\n  -- by 2025 lit/unlit status --\n")
+    print(as.data.frame(lit_summary_tbl), row.names = FALSE, digits = 3)
+  } else {
+    message("  No lit_unlit.tif for ", slug, " -- skipping lit/unlit summary.")
+  }
+
   # -- quick-look map -------------------------------------------------------
   cat_df <- as.data.frame(category, xy = TRUE) |>
     rename(growth_code = 3) |>
@@ -199,18 +240,23 @@ run_city <- function(slug) {
   ggsave(file.path(out_dir, paste0("osm_access_", slug, ".png")), p,
          width = 9, height = 9, dpi = 250)
 
-  list(summary = summary_tbl, n_amenities = nrow(all_pts))
+  list(summary = summary_tbl, lit_summary = lit_summary_tbl, n_amenities = nrow(all_pts))
 }
 
 results <- purrr::map(pilot_slugs, run_city)
 names(results) <- pilot_slugs
 results <- purrr::compact(results)
 
-summary_all <- purrr::map_dfr(results, "summary")
-saveRDS(summary_all, here("data/intermediate/osm_access_pilot.Rds"))
+summary_all     <- purrr::map_dfr(results, "summary")
+lit_summary_all <- purrr::map_dfr(results, "lit_summary")
+saveRDS(list(growth = summary_all, lit = lit_summary_all),
+        here("data/intermediate/osm_access_pilot.Rds"))
 
-cat("\n==== Combined summary (all pilot cities) ====\n")
+cat("\n==== Combined summary (all pilot cities) -- growth category ====\n")
 print(as.data.frame(summary_all), row.names = FALSE, digits = 3)
+
+cat("\n==== Combined summary (all pilot cities) -- 2025 lit/unlit status ====\n")
+print(as.data.frame(lit_summary_all), row.names = FALSE, digits = 3)
 
 cat("\nWrote data/intermediate/osm_access_pilot.Rds and",
     length(results), "output/exploratory/osm_access_<slug>.png map(s)\n")
