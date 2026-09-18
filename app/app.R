@@ -43,6 +43,70 @@ city_index <- city_index |>
     by = "slug"
   )
 
+# Boundary-saturation flag (scripts/exploratory/1_edge_saturation_check.R): is a
+# city's Africapolis polygon already built-up right up to its edge, so its
+# measured growth may be capped by the fixed 2020-vintage boundary rather than a
+# genuine slowdown? "saturated" excludes low_signal cities (edge_fill < 10%,
+# e.g. Hawassa) where a high ratio is just noise on a near-empty polygon, not a
+# real saturation signal. 10 untested cities (Cairo among them — polygon too
+# geometrically complex to buffer) read "not scored".
+edge_sat <- readRDS("data/edge_saturation_check.Rds") |>
+  dplyr::transmute(
+    slug,
+    boundary_quality = dplyr::case_when(
+      is.na(edge_to_interior_ratio)        ~ "Not scored",
+      boundary_saturated & !low_signal     ~ "Boundary-saturated",
+      TRUE                                 ~ "OK"
+    )
+  )
+city_index <- city_index |> dplyr::left_join(edge_sat, by = "slug")
+
+# Growth-timing & growth-form tags — dynamic tercile classification of the same
+# early/late acceleration and sprawl-share metrics used in
+# docs/insights-1990-2025.md §3/§4, so the app narrative tracks the write-up.
+# Both require a minimum base (20 km2 in 1990 for timing; 30 km2 total growth
+# for form) so small/noisy agglomerations aren't force-classified.
+builtup_wide <- readRDS("data/africapolis_builtup.Rds") |>
+  dplyr::select(agglosname, iso3, year, area_total_km2) |>
+  tidyr::pivot_wider(names_from = year, values_from = area_total_km2, names_prefix = "y") |>
+  dplyr::inner_join(city_index |> dplyr::select(slug, iso3, agglosname), by = c("iso3", "agglosname")) |>
+  dplyr::transmute(
+    slug,
+    g_early = (y2005 - y1990) / y1990,
+    g_late  = (y2025 - y2010) / y2010,
+    accel   = g_late - g_early,
+    base_1990 = y1990
+  )
+accel_terc <- stats::quantile(
+  builtup_wide$accel[builtup_wide$base_1990 > 20], probs = c(1/3, 2/3), na.rm = TRUE
+)
+builtup_wide <- builtup_wide |>
+  dplyr::mutate(
+    growth_timing = dplyr::case_when(
+      base_1990 <= 20      ~ "N/A (small base)",
+      accel >= accel_terc[2] ~ "Accelerating",
+      accel <= accel_terc[1] ~ "Decelerating",
+      TRUE                  ~ "Steady"
+    )
+  )
+city_index <- city_index |> dplyr::left_join(
+  builtup_wide |> dplyr::select(slug, growth_timing), by = "slug"
+)
+
+form_terc <- stats::quantile(
+  city_index$sprawl_share[city_index$sprawl_km2 + city_index$intens_km2 > 30],
+  probs = c(1/3, 2/3), na.rm = TRUE
+)
+city_index <- city_index |>
+  dplyr::mutate(
+    growth_form = dplyr::case_when(
+      is.na(sprawl_share) | sprawl_km2 + intens_km2 <= 30 ~ "N/A (low growth)",
+      sprawl_share >= form_terc[2]                          ~ "Sprawl-dominant",
+      sprawl_share <= form_terc[1]                          ~ "Infill-dominant",
+      TRUE                                                  ~ "Mixed"
+    )
+  )
+
 country_choices <- {
   cm <- city_index |>
     dplyr::distinct(country, iso3) |>
@@ -123,6 +187,17 @@ pop_wide <- pop_ts_data |>
   dplyr::mutate(pop_ghs_growth = (pop_ghs_2025 - pop_ghs_1990) / pop_ghs_1990)
 city_index <- city_index |> dplyr::left_join(pop_wide, by = "slug")
 
+# Population density = GHS-POP ÷ built-up footprint (persons per km² of built-up
+# land, not per km² of the whole polygon). Same denominator as the built-up
+# density index above, so the two "density" concepts stay comparable; carries
+# the same GHS-POP/GHSL circularity caveat (see About tab).
+city_index <- city_index |>
+  dplyr::mutate(
+    pop_density_1990  = pop_ghs_1990 / footprint_1990_km2,
+    pop_density_2025  = pop_ghs_2025 / footprint_2025_km2,
+    pop_density_change = pop_density_2025 - pop_density_1990
+  )
+
 # Multi-select choices: "City (ISO3)" → slug, so duplicate names disambiguate.
 all_city_choices <- setNames(
   city_index$slug,
@@ -144,7 +219,10 @@ rank_tables <- list(
       `Growth (%)`          = round(pct_growth * 100, 1),
       `Sprawl (%)`          = round(sprawl_share * 100, 1),
       `Density change`      = round(density_change, 3),
-      `Tree cover (%)`      = round(p_tree_cov, 1)
+      `Tree cover (%)`      = round(p_tree_cov, 1),
+      `Growth timing`       = growth_timing,
+      `Growth form`         = growth_form,
+      `Boundary quality`    = boundary_quality
     ) |>
     dplyr::arrange(dplyr::desc(`Growth (%)`)),
 
@@ -171,7 +249,10 @@ rank_tables <- list(
       `Pop 2025 (M)`           = round(pop_ghs_2025 / 1e6, 2),
       `Pop growth (%)`         = round(pop_ghs_growth * 100, 1),
       `Built-up/cap 1990 (m²)` = round(total_km2_1990 * 1e6 / pop_ghs_1990, 1),
-      `Built-up/cap 2025 (m²)` = round(total_km2_2025 * 1e6 / pop_ghs_2025, 1)
+      `Built-up/cap 2025 (m²)` = round(total_km2_2025 * 1e6 / pop_ghs_2025, 1),
+      `Pop density 1990 (per km²)` = round(pop_density_1990, 0),
+      `Pop density 2025 (per km²)` = round(pop_density_2025, 0),
+      `Density change (per km²)`   = round(pop_density_change, 0)
     ) |>
     dplyr::arrange(dplyr::desc(`Pop growth (%)`))
 )
@@ -242,7 +323,10 @@ sqrt_capped <- function(r, upper = UPPER) {
 # pass NULL to omit those rows.
 city_info_html <- function(name, mode, y0, y1,
                            bu_y0, bu_y1, pop_y0, pop_y1,
-                           tree_cov, gs = NULL) {
+                           tree_cov, gs = NULL,
+                           boundary_flag = NA_character_,
+                           growth_timing = NA_character_,
+                           growth_form   = NA_character_) {
   km  <- function(x) if (is.na(x)) "N/A" else sprintf("%.1f km&sup2;", x)
   ppl <- function(x) if (is.na(x)) "N/A" else format(round(x), big.mark = ",", scientific = FALSE)
   gpct <- function(x) if (is.na(x)) "N/A" else sprintf("%+.0f%%", x * 100)
@@ -254,13 +338,18 @@ city_info_html <- function(name, mode, y0, y1,
            "<td style='text-align:right'>", value, "</td></tr>")
   }
 
+  pdens <- function(pop, fp) if (is.na(pop) || is.na(fp) || fp == 0) NA_real_ else pop / fp
+  ppkm  <- function(x) if (is.na(x)) "N/A" else paste0(format(round(x), big.mark = ",", scientific = FALSE), "/km&sup2;")
+
   if (mode == "single") {
+    pd0 <- if (!is.null(gs)) pdens(pop_y0, gs$footprint_0) else NA_real_
     body <- paste0(
       row(paste0("Built-up ", y0), km(bu_y0)),
       if (!is.null(gs)) row(paste0("Footprint ", y0), km(gs$footprint_0)) else "",
       if (!is.null(gs) && !is.na(gs$density_0))
         row(paste0("Density index ", y0), sprintf("%.3f", gs$density_0)) else "",
       row(paste0("Population ", y0), ppl(pop_y0), top = TRUE),
+      if (!is.na(pd0)) row(paste0("Pop density ", y0), ppkm(pd0)) else "",
       row("Tree cover (2020)", tree_str, top = TRUE)
     )
     footnote <- ""
@@ -269,6 +358,8 @@ city_info_html <- function(name, mode, y0, y1,
     g_bu  <- if (is.na(d_bu)   || is.na(bu_y0)  || bu_y0  == 0) NA_real_ else d_bu / bu_y0
     d_pop <- if (is.na(pop_y0) || is.na(pop_y1)) NA_real_ else pop_y1 - pop_y0
     g_pop <- if (is.na(d_pop)  || is.na(pop_y0) || pop_y0 == 0) NA_real_ else d_pop / pop_y0
+    pd0   <- if (!is.null(gs)) pdens(pop_y0, gs$footprint_0) else NA_real_
+    pd1   <- if (!is.null(gs)) pdens(pop_y1, gs$footprint_1) else NA_real_
 
     sprawl_rows <- if (!is.null(gs) && !is.na(gs$sprawl_share)) paste0(
       row("New land (sprawl)",
@@ -293,6 +384,10 @@ city_info_html <- function(name, mode, y0, y1,
       row(sprintf("Pop change %s&ndash;%s", y0, y1),
           sprintf("<b>%s (%s)</b>",
                   if (is.na(d_pop)) "N/A" else paste0("+", ppl(d_pop)), gpct(g_pop))),
+      if (!is.na(pd0) || !is.na(pd1)) paste0(
+        row(paste0("Pop density ", y0), ppkm(pd0)),
+        row(paste0("Pop density ", y1), ppkm(pd1))
+      ) else "",
       sprawl_rows,
       row("Tree cover (2020)", tree_str, top = TRUE)
     )
@@ -305,6 +400,22 @@ city_info_html <- function(name, mode, y0, y1,
     ) else ""
   }
 
+  warning_html <- if (isTRUE(boundary_flag == "Boundary-saturated")) paste0(
+    "<div style='margin:8px 12px 0;padding:6px 8px;font-size:11px;",
+    "background:#fff3cd;border:1px solid #ffe69c;border-radius:4px;color:#664d03'>",
+    "&#9888; Boundary-saturated: built-up runs right to this polygon&rsquo;s edge &mdash; ",
+    "growth here may be undercounted by the fixed boundary rather than slowing for real.",
+    "</div>"
+  ) else ""
+
+  tags_html <- if (!is.na(growth_timing) || !is.na(growth_form)) paste0(
+    "<div style='padding:6px 12px 0;font-size:10px;color:#666'>",
+    "1990&ndash;2025 profile: ",
+    "<b>", if (is.na(growth_timing)) "N/A" else growth_timing, "</b> &middot; ",
+    "<b>", if (is.na(growth_form)) "N/A" else growth_form, "</b>",
+    "</div>"
+  ) else ""
+
   HTML(paste0(
     "<div style='background:rgba(255,255,255,0.95);border-radius:6px;",
     "box-shadow:0 1px 5px rgba(0,0,0,0.4);min-width:230px;max-width:290px;",
@@ -316,6 +427,8 @@ city_info_html <- function(name, mode, y0, y1,
     "border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center'>",
     "<span>", htmltools::htmlEscape(name), "</span>",
     "<span class='arr'>&#9660;</span></div>",
+    warning_html,
+    tags_html,
     "<div style='padding:8px 12px'>",
     "<table style='width:100%;border-collapse:collapse;line-height:1.6'>",
     body,
@@ -600,8 +713,9 @@ ui <- page_navbar(
         radioButtons(
           "scatter_type", "Comparison",
           choices = c(
-            "Initial extent vs. growth"  = "extent_growth",
-            "Sprawl vs. intensification" = "sprawl_intens"
+            "Initial extent vs. growth"        = "extent_growth",
+            "Sprawl vs. intensification"       = "sprawl_intens",
+            "Population growth vs. land growth" = "pop_vs_builtup"
           ),
           selected = "extent_growth"
         )
@@ -633,7 +747,9 @@ ui <- page_navbar(
           " Change can be shown as the ", tags$b("intensive margin"), " (densification within",
           " the existing footprint) or the ", tags$b("extensive margin"), " (greenfield expansion).",
           " The info panel is dynamic: built-up stock, increase, population (GHS-POP), sprawl",
-          " decomposition and density trend all follow the selected From→To years; tree cover is 2020."
+          " decomposition and density trend all follow the selected From→To years; tree cover is 2020.",
+          " A 1990–2025 growth-timing / growth-form tag and a boundary-saturation warning",
+          " (see Known caveats below) also appear where applicable."
         ),
         tags$dt(tags$b("Nighttime Lights")),
         tags$dd(
@@ -652,9 +768,13 @@ ui <- page_navbar(
         ),
         tags$dt(tags$b("Rankings")),
         tags$dd(
-          "Sortable table of all 100 agglomerations with built-up extent (2000 & 2025),",
+          "Sortable table of all 100 agglomerations with built-up extent (1990 & 2025),",
           " absolute and percentage growth, sprawl share, density change, GHS-POP population and",
           " growth, built-up per capita, tree cover, and dark-or-dim built-up share.",
+          " The Built-up view also carries a ", tags$b("growth timing"), " tag (Accelerating /",
+          " Steady / Decelerating, comparing 1990–2005 vs. 2010–2025 growth rates), a ",
+          tags$b("growth form"), " tag (Sprawl-dominant / Mixed / Infill-dominant, by sprawl",
+          " share) and a ", tags$b("boundary quality"), " flag (see Known caveats below).",
           " Filterable and downloadable as CSV."
         ),
         tags$dt(tags$b("Scatterplots")),
@@ -662,7 +782,11 @@ ui <- page_navbar(
           tags$em("Initial extent vs. growth:"), " identifies whether larger cities grew more in absolute terms.",
           tags$br(),
           tags$em("Sprawl vs. intensification:"), " plots new-land growth against within-footprint",
-          " densification; cities above the diagonal are sprawl-dominant."
+          " densification; cities above the diagonal are sprawl-dominant.",
+          tags$br(),
+          tags$em("Population growth vs. land growth:"), " plots 1990–2025 population growth against",
+          " built-up growth; cities above the diagonal grew their footprint faster than their",
+          " population (thinning out), cities below it densified."
         )
       ),
 
@@ -707,8 +831,8 @@ ui <- page_navbar(
           " 5-year epochs (1990–2025) of the built-up layer, summed within each agglomeration",
           " polygon. Drives the population time-series and the per-capita built-up figures.",
           tags$em(" Caveat:"), " GHS-POP is spatially disaggregated ", tags$em("using"),
-          " the GHSL built-up layer, so any per-capita built-up density derived from the two is",
-          " partly circular."
+          " the GHSL built-up layer, so any per-capita built-up density or population density",
+          " derived from the two is partly circular."
         )
       ),
 
@@ -760,6 +884,18 @@ ui <- page_navbar(
         " positive = densifying, negative = sprawling."
       ),
 
+      tags$h5("Population density"),
+      p(
+        "Reported as GHS-POP population divided by the ", tags$b("built-up footprint"),
+        " (km², the same denominator as the density index above) rather than by the whole",
+        " polygon area, so it reads as persons per km² of built-up land, not per km² of the",
+        " (often mostly-empty) agglomeration boundary.",
+        " Shown in the Urban Growth info box for whichever From→To years are selected, and in",
+        " the Population Rankings table for 1990 and 2025.",
+        tags$em(" Caveat:"), " inherits the same GHS-POP/GHSL circularity as per-capita",
+        " built-up (see Data sources above)."
+      ),
+
       tags$h5("Nighttime light classification"),
       p(
         "Each built-up pixel is classed by its corrected DN in the matching year: ",
@@ -783,6 +919,33 @@ ui <- page_navbar(
           " start at 2000 for comparability with the built-up series."
         ),
         style = "font-size:12px; color:#666; border-left:3px solid #ddd; padding-left:10px; margin-top:4px"
+      ),
+
+      hr(),
+      h4("Known caveats"),
+      tags$ul(
+        tags$li(
+          tags$b("Abuja's growth figure is likely an undercount."),
+          " A boundary-saturation check (edge-vs-interior built-up fill within each Africapolis",
+          " polygon) found Abuja's polygon nearly wall-to-wall built-up right up to its border —",
+          " on top of already having the single largest growth figure in the sample",
+          " (+404%, 1990–2025). Its apparent post-2010 growth slowdown may partly be a",
+          " measurement ceiling — the fixed 2020-vintage boundary capping how much further",
+          " growth can still register — rather than a genuine deceleration.",
+          " Ten other cities show the same pattern more mildly (Agadir, Johannesburg, Durban,",
+          " Constantine, Cape Town, Onitsha, Nsukka, Al-Iskandariya, Bafoussam, Harare).",
+          " Every other megacity (Lagos, Kinshasa, Nairobi, Kigali, Abidjan, Accra) shows no",
+          " such signal — their growth numbers aren't boundary-capped."
+        ),
+        tags$li(
+          tags$b("Cities are sprawling out, not building up."),
+          " A one-off check (GHS-BUILT-V building volume ÷ BUILT-S footprint = mean building",
+          " height, 2000 vs. 2025 only) found the median height across the top 100 ",
+          tags$em("fell"), " from 7.67 m to 7.25 m — footprint growth (median +48%)",
+          " consistently outran volume growth (median +36%). Most of the measured expansion is",
+          " horizontal, low-rise growth at the edge rather than vertical growth within existing",
+          " footprints, even where individual downtown cores may be getting taller."
+        )
       ),
 
       hr(),
@@ -949,7 +1112,10 @@ server <- function(input, output, session) {
       pop_y0   = pop_lookup(y0i),
       pop_y1   = pop_lookup(y1i),
       tree_cov = tree_cov,
-      gs       = gs
+      gs       = gs,
+      boundary_flag = bb$boundary_quality,
+      growth_timing = bb$growth_timing,
+      growth_form   = bb$growth_form
     )
 
     leaflet() |>
@@ -1317,7 +1483,7 @@ server <- function(input, output, session) {
         theme_minimal(base_size = 13) +
         theme(legend.position = "right", panel.grid.minor = element_blank())
 
-    } else {
+    } else if (input$scatter_type == "sprawl_intens") {
       df <- city_index |>
         dplyr::filter(!is.na(sprawl_km2), !is.na(intens_km2))
 
@@ -1344,6 +1510,35 @@ server <- function(input, output, session) {
           x     = "Densification — growth within existing footprint (km², sqrt scale)",
           y     = "New land — growth on previously unbuilt land (km², sqrt scale)",
           title = "Sprawl vs. intensification 1990–2025 — above diagonal = sprawl-dominant"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(legend.position = "right", panel.grid.minor = element_blank())
+
+    } else {
+      df <- city_index |>
+        dplyr::filter(!is.na(pop_ghs_growth), !is.na(pct_growth), pop_ghs_growth > 0)
+
+      p <- ggplot(df,
+                  aes(x      = pop_ghs_growth * 100,
+                      y      = pct_growth * 100,
+                      size   = total_km2_2025,
+                      colour = macro_region,
+                      text   = paste0(
+                        agglosname, " (", iso3, ")\n",
+                        "Population growth: +", round(pop_ghs_growth * 100), "%\n",
+                        "Built-up growth: +", round(pct_growth * 100), "%\n",
+                        "Land/pop growth ratio: ", sprintf("%.2f", pct_growth / pop_ghs_growth)
+                      ))) +
+        geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+        geom_point(alpha = 0.8) +
+        scale_x_continuous(labels = scales::label_comma(), trans = "sqrt") +
+        scale_y_continuous(labels = scales::label_comma(), trans = "sqrt") +
+        scale_size_continuous(name = "Built-up\n2025 (km²)", range = c(2, 12)) +
+        scale_colour_viridis_d(option = "D", end = 0.9, name = "Region", drop = FALSE) +
+        labs(
+          x     = "Population growth 1990–2025 (%, sqrt scale)",
+          y     = "Built-up growth 1990–2025 (%, sqrt scale)",
+          title = "Population growth vs. built-up growth — above diagonal = land outran population"
         ) +
         theme_minimal(base_size = 13) +
         theme(legend.position = "right", panel.grid.minor = element_blank())
