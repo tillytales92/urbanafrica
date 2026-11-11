@@ -1,9 +1,10 @@
 # Copy the blog post in blog/ to the local clone of the website repo
 # (tillmeissner.github.io), ready to commit and push. Not part of the pipeline.
 #
-#   blog/YYYY-MM-DD-<title>.md  ->  <SITE_DIR>/_posts/
-#   blog/*.js                   ->  <SITE_DIR>/assets/js/
-#   blog/*.json                 ->  <SITE_DIR>/assets/json/
+#   blog/YYYY-MM-DD-<title>.md     ->  <SITE_DIR>/_posts/
+#   blog/*.js                      ->  <SITE_DIR>/assets/js/
+#   blog/*.json                    ->  <SITE_DIR>/assets/json/
+#   blog/*.{png,jpg,jpeg,gif,svg}  ->  <SITE_DIR>/assets/img/
 #
 # SITE_DIR is the local clone of the website repo. Set it once in ~/.Renviron,
 # e.g.  SITE_DIR="C:/Users/ADMIN/Documents/GitHub/tillmeissner.github.io"
@@ -23,6 +24,7 @@ blog_dir <- here("blog")
 posts <- list.files(blog_dir, pattern = "^\\d{4}-\\d{2}-\\d{2}-.+\\.md$", full.names = TRUE)
 js    <- list.files(blog_dir, pattern = "\\.js$", full.names = TRUE)
 json  <- list.files(blog_dir, pattern = "\\.json$", full.names = TRUE)
+img   <- list.files(blog_dir, pattern = "\\.(png|jpe?g|gif|svg)$", ignore.case = TRUE, full.names = TRUE)
 if (length(posts) == 0) stop("No post found in ", blog_dir, " (expected YYYY-MM-DD-title.md)")
 
 # Jekyll skips posts dated in the future, so the post would silently not appear.
@@ -48,5 +50,6 @@ copy_to <- function(files, sub_dir) {
 copy_to(posts, "_posts")
 copy_to(js, "assets/js")
 copy_to(json, "assets/json")
+copy_to(img, "assets/img")
 
 cat("\nCopied to", site_dir, "\nNext: commit and push the website repo to publish.\n")

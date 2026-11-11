@@ -41,6 +41,10 @@ _styles: >
 
 Between 1990 and 2025, the built-up area of Africa's 100 largest cities grew from about 6,900 to 12,500 km², an increase of 81%. Over the same period their population went from 142 to 370 million, an increase of 161%. In the median city, each million residents now live on 35 km² of built-up land, down from 48 km² in 1990. On average, then, African cities have grown denser rather than more spread out. The average hides a lot of variation, though, and the chart below shows how differently individual cities grew.
 
+{% include figure.liquid loading="eager" path="assets/img/buildupexpansion_10km.jpeg" class="img-fluid rounded z-depth-1" %}
+
+Zoomed out to the whole continent, the same 25 years of built-up change (shown here aggregated to 10 km cells, on a log scale) traces growth well beyond the 100 cities in the chart below: along the Nile, across the Sahel's southern edge, and through secondary towns that never make a top-100 list but are expanding all the same.
+
 Each bubble is a city. Its horizontal position is built-up area, its vertical position is population density, and its size is population. Both axes use a log scale and stay fixed throughout. As you scroll, time runs from 1990 to 2025, so a city that moves right and down is adding land faster than people, while one that moves up is filling in. Ten cities are highlighted and discussed along the way; the other 90 are shown in grey (hover over any bubble for its numbers).
 
 <div id="ug-scrolly">
@@ -73,9 +77,35 @@ The same chart, without the narration. Press play or drag the slider to change t
   <div class="ug-legend" id="ug-legend2"></div>
 </div>
 
+## Regional patterns, light and height
+
+The city-by-city view hides some regional structure. Median built-up growth
+1990–2025 was fastest in East Africa (+109%) and West Africa (+100%), slower
+in North Africa (+81%), and slowest in Central (+48%) and Southern Africa
+(+45%). Timing differs too, and only shows up with a 1990 baseline:
+Congo-basin cities — Brazzaville, Pointe-Noire, Lubumbashi, Libreville — were
+essentially flat through the 1990s and only took off after 2010. North
+African cities stand out for growing almost entirely by filling in rather
+than sprawling: Tunis, Algiers and Casablanca all draw 70–80% of their
+1990–2025 growth from density rather than new land, echoing Tunis's story
+above across the whole region. The genuine sprawl frontier instead sits in
+Ethiopian and Kenyan secondary cities — Hawassa, Sodo, Nakuru, Embu — each
+adding 200–600% more land on 50–160% more people.
+
+Two other measures tell a consistent story. Nighttime-lights data show
+electrification catching up fast: the dark-or-dim share of built-up area
+fell from 94% to 3% in Mogadishu, 86% to 2% in Ikorodu, and 85% to 2% in
+Mwanza between 2000 and 2025 — largely the same small East African and
+south-eastern Nigerian cities that lead the sprawl list. And despite all
+this horizontal growth, cities are not getting taller: median mean building
+height across the 100 cities (building volume ÷ footprint) fell slightly,
+from 7.67 m to 7.25 m, 2000–2025. New construction is overwhelmingly
+low-rise, and the more a city's growth is sprawl-dominant, the more its
+average height falls.
+
 ## Data and caveats
 
-Built-up area and population come from the Global Human Settlement Layer (GHSL BUILT-S and GHS-POP, release R2023A, European Commission JRC), in five-year epochs from 1990 to 2025. Values between epochs are interpolated linearly for the animation. City boundaries are Africapolis 2020 agglomerations (OECD/SWAC), held fixed at their 2020 extent for all years.
+Built-up area and population come from the Global Human Settlement Layer (GHSL BUILT-S and GHS-POP, release R2023A, European Commission JRC), in five-year epochs from 1990 to 2025. Values between epochs are interpolated linearly for the animation. City boundaries are Africapolis 2020 agglomerations (OECD/SWAC), held fixed at their 2020 extent for all years. Building height is GHSL BUILT-V (volume) divided by BUILT-S (footprint), available 2000–2025. Nighttime-lights figures use a bloom- and top-coding-corrected DMSP series, also read from 2000.
 
 Two caveats are worth keeping in mind. A few cities, notably Kinshasa and Luanda, had already spread beyond their mapped boundary by 1990, so their land growth is a floor rather than an estimate. And for several smaller cities, the large percentage changes partly reflect how the boundary polygon was drawn rather than actual growth.
 
