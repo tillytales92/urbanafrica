@@ -3,22 +3,12 @@
 # built-up + population + region + sprawl stats.
 #
 # Outputs:
-#   1. <SITE_DIR>/assets/json/urban-growth.json -- the data behind the blog post
-#      on the personal website (tillmeissner.github.io). After running, commit and
-#      push the website repo to publish.
+#   1. blog/urban-growth.json -- the data behind the blog post. The blog/ folder
+#      holds everything the post needs; publish it to the website with
+#      scripts/exploratory/publish_blog.R once it is ready.
 #   2. output/urban_growth_story_data.json (+ baked into
 #      output/urban_growth_story.html if that file exists) -- local copies.
-#
-# SITE_DIR is the local clone of the website repo. Set it once in ~/.Renviron,
-# e.g.  SITE_DIR="C:/Users/ADMIN/Documents/GitHub/tillmeissner.github.io"
-# (usethis::edit_r_environ() opens the file; restart R afterwards).
 pacman::p_load(here, dplyr, tidyr, countrycode, jsonlite)
-
-site_dir <- Sys.getenv("SITE_DIR")
-if (site_dir == "" || !dir.exists(file.path(site_dir, "assets"))) {
-  stop("SITE_DIR is not set or does not point to the website repo. ",
-       "Add SITE_DIR=\"<path to tillmeissner.github.io>\" to ~/.Renviron and restart R.")
-}
 
 # Readable display names. Africapolis names come lower-cased after the first
 # letter ("Al-qahira", "Cidade de maputo") and cross-border agglomerations carry
@@ -105,8 +95,9 @@ out <- list(
   years = sort(unique(panel$year))
 )
 
-site_json <- file.path(site_dir, "assets/json/urban-growth.json")
-write_json(out, site_json, auto_unbox = TRUE, digits = 4)
+blog_json <- here("blog/urban-growth.json")
+dir.create(dirname(blog_json), showWarnings = FALSE)
+write_json(out, blog_json, auto_unbox = TRUE, digits = 4)
 
 dir.create(here("output"), showWarnings = FALSE)
 write_json(out, here("output/urban_growth_story_data.json"),
@@ -130,5 +121,5 @@ if (file.exists(html_path)) {
 }
 
 cat("Wrote", nrow(panel), "rows,", length(unique(panel$slug)), "cities,",
-    length(unique(panel$year)), "epochs to", site_json, "\n",
-    "Next: commit and push the website repo to publish.\n")
+    length(unique(panel$year)), "epochs to", blog_json, "\n",
+    "To publish: run scripts/exploratory/publish_blog.R, then push the website repo.\n")

@@ -34,6 +34,7 @@ app/                   the Shiny app (app.R + app/data/)
 data/raw/              downloaded source data (not created by scripts)
 data/intermediate/     everything the scripts derive
 output/                final PNG plots and per-metro HTML maps
+blog/                  the "Shape of Growth" blog post (post .md, chart .js, data .json), published to the website
 ```
 
 All scripts resolve paths with `here()`, which finds the project root via
@@ -101,6 +102,11 @@ under `scripts/`.
   (nearest-corridor distance has almost no variance across the 100 cities:
   median 5 km, since corridors are drawn between major cities in the first place).
 - `insights_1990_2025.R` — reproduces the findings in `docs/insights-1990-2025.md`.
+- `export_bubble_story_data.R` — writes `blog/urban-growth.json` (per-city, per-epoch built-up,
+  population, density, region; tidied city names) for the blog post's bubble chart.
+- `publish_blog.R` — copies `blog/` into the local website repo (`SITE_DIR` in `~/.Renviron`):
+  the post to `_posts/`, `.js` to `assets/js/`, `.json` to `assets/json/`. Then commit and push
+  the website repo. Warns if the post is future-dated (Jekyll would skip it).
 
 ## Data architecture
 
