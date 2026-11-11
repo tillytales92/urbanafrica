@@ -60,5 +60,20 @@ out <- list(
 
 write_json(out, here("output/urban_growth_story_data.json"),
            auto_unbox = TRUE, digits = 4)
+
+# Bake the JSON directly into urban_growth_story.html between the
+# <!--DATA:START-->/<!--DATA:END--> markers. Opening the .html via file://
+# (double-click) blocks fetch() of a sibling .json -- only a hosted page
+# (e.g. the Claude artifact) can fetch it -- so the shipped file must be
+# self-contained. The .json stays alongside it for inspection/reuse.
+html_path <- here("output/urban_growth_story.html")
+html_txt  <- paste(readLines(html_path, warn = FALSE), collapse = "\n")
+json_txt  <- paste(readLines(here("output/urban_growth_story_data.json"), warn = FALSE), collapse = "")
+baked <- sub("(?s)<!--DATA:START-->.*?<!--DATA:END-->",
+              paste0("<!--DATA:START-->", json_txt, "<!--DATA:END-->"),
+              html_txt, perl = TRUE, fixed = FALSE)
+if (identical(baked, html_txt)) stop("DATA:START/END markers not found in ", html_path)
+writeLines(baked, html_path)
+
 cat("Wrote", nrow(panel), "rows,", length(unique(panel$slug)), "cities,",
-    length(unique(panel$year)), "epochs.\n")
+    length(unique(panel$year)), "epochs. Baked into", html_path, "\n")
