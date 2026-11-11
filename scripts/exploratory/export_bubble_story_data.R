@@ -1,8 +1,49 @@
-# One-off export for the scrollytelling bubble-chart artifact (urban growth,
-# 1990-2025). Not part of the numbered pipeline. Writes a compact JSON of
-# per-city/per-epoch built-up + population + region + sprawl stats, used to
-# build output/urban_growth_story.html (D3, fetched at runtime, no server).
+# Export for the "Shape of Growth" bubble chart (urban growth, 1990-2025).
+# Not part of the numbered pipeline. Writes a compact JSON of per-city/per-epoch
+# built-up + population + region + sprawl stats.
+#
+# Outputs:
+#   1. <SITE_DIR>/assets/json/urban-growth.json -- the data behind the blog post
+#      on the personal website (tillmeissner.github.io). After running, commit and
+#      push the website repo to publish.
+#   2. output/urban_growth_story_data.json (+ baked into
+#      output/urban_growth_story.html if that file exists) -- local copies.
+#
+# SITE_DIR is the local clone of the website repo. Set it once in ~/.Renviron,
+# e.g.  SITE_DIR="C:/Users/ADMIN/Documents/GitHub/tillmeissner.github.io"
+# (usethis::edit_r_environ() opens the file; restart R afterwards).
 pacman::p_load(here, dplyr, tidyr, countrycode, jsonlite)
+
+site_dir <- Sys.getenv("SITE_DIR")
+if (site_dir == "" || !dir.exists(file.path(site_dir, "assets"))) {
+  stop("SITE_DIR is not set or does not point to the website repo. ",
+       "Add SITE_DIR=\"<path to tillmeissner.github.io>\" to ~/.Renviron and restart R.")
+}
+
+# Readable display names. Africapolis names come lower-cased after the first
+# letter ("Al-qahira", "Cidade de maputo") and cross-border agglomerations carry
+# "[iso] n" suffixes. Common English names for a few cities; title case for the
+# rest; country code appended where two agglomerations end up with the same name.
+english_names <- c(
+  "Al-qahira" = "Cairo", "Al-iskandariya" = "Alexandria", "Al-uqsur" = "Luxor",
+  "Cidade de maputo" = "Maputo", "Al-fayyum" = "Faiyum",
+  "Al-mansura/mahalla al-kubra" = "Mansoura / Mahalla al-Kubra",
+  "Suhag/asiut" = "Sohag / Asyut"
+)
+title_part <- function(x) paste0(toupper(substr(x, 1, 1)), substring(x, 2))
+tidy_name <- function(n) {
+  if (n %in% names(english_names)) return(unname(english_names[n]))
+  n <- sub("\\s*\\[[a-z]{3}\\]\\s*\\d*$", "", n)
+  words <- strsplit(n, " ", fixed = TRUE)[[1]]
+  words <- vapply(words, function(w) {
+    paste(title_part(strsplit(w, "-", fixed = TRUE)[[1]]), collapse = "-")
+  }, character(1))
+  n <- paste(words, collapse = " ")
+  n <- paste(title_part(strsplit(n, "/", fixed = TRUE)[[1]]), collapse = " / ")
+  n <- gsub(" Es ", " es ", n, fixed = TRUE)          # Dar es Salaam
+  n <- sub("^Ndjamena", "N'Djamena", n)
+  sub("^Lome", "Lom\u00e9", n)
+}
 
 bu  <- readRDS(here("data/intermediate/africapolis_builtup.Rds"))
 pop <- readRDS(here("data/intermediate/africapolis_pop.Rds"))
@@ -31,8 +72,14 @@ panel <- bu |>
             year, area_km2 = round(area_total_km2, 2),
             pop = round(pop), density = round(pop / area_total_km2, 1),
             sprawl_share = round(sprawl_share, 3), pct_growth = round(pct_growth, 3)) |>
-  arrange(slug, year)
+  arrange(slug, year) |>
+  mutate(name = vapply(name, tidy_name, character(1), USE.NAMES = FALSE)) |>
+  group_by(name) |>
+  mutate(name = if (n_distinct(iso3) > 1) paste0(name, " (", iso3, ")") else name) |>
+  ungroup()
 
+# Story texts for the original standalone artifact. The blog post keeps its own
+# (edited) texts in the post's markdown file; the chart there ignores this field.
 highlight <- tibble::tibble(
   slug  = c("lagos", "johannesburg", "kinshasa", "al_qahira", "nairobi",
             "kigali", "abuja", "hawassa", "tunis", "juba"),
@@ -58,6 +105,10 @@ out <- list(
   years = sort(unique(panel$year))
 )
 
+site_json <- file.path(site_dir, "assets/json/urban-growth.json")
+write_json(out, site_json, auto_unbox = TRUE, digits = 4)
+
+dir.create(here("output"), showWarnings = FALSE)
 write_json(out, here("output/urban_growth_story_data.json"),
            auto_unbox = TRUE, digits = 4)
 
@@ -67,13 +118,17 @@ write_json(out, here("output/urban_growth_story_data.json"),
 # (e.g. the Claude artifact) can fetch it -- so the shipped file must be
 # self-contained. The .json stays alongside it for inspection/reuse.
 html_path <- here("output/urban_growth_story.html")
-html_txt  <- paste(readLines(html_path, warn = FALSE), collapse = "\n")
-json_txt  <- paste(readLines(here("output/urban_growth_story_data.json"), warn = FALSE), collapse = "")
-baked <- sub("(?s)<!--DATA:START-->.*?<!--DATA:END-->",
-              paste0("<!--DATA:START-->", json_txt, "<!--DATA:END-->"),
-              html_txt, perl = TRUE, fixed = FALSE)
-if (identical(baked, html_txt)) stop("DATA:START/END markers not found in ", html_path)
-writeLines(baked, html_path)
+if (file.exists(html_path)) {
+  html_txt <- paste(readLines(html_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  json_txt <- paste(readLines(here("output/urban_growth_story_data.json"), warn = FALSE,
+                              encoding = "UTF-8"), collapse = "")
+  baked <- sub("(?s)<!--DATA:START-->.*?<!--DATA:END-->",
+               paste0("<!--DATA:START-->", json_txt, "<!--DATA:END-->"),
+               html_txt, perl = TRUE, fixed = FALSE)
+  if (identical(baked, html_txt)) stop("DATA:START/END markers not found in ", html_path)
+  writeLines(baked, html_path, useBytes = TRUE)
+}
 
 cat("Wrote", nrow(panel), "rows,", length(unique(panel$slug)), "cities,",
-    length(unique(panel$year)), "epochs. Baked into", html_path, "\n")
+    length(unique(panel$year)), "epochs to", site_json, "\n",
+    "Next: commit and push the website repo to publish.\n")
