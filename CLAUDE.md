@@ -72,6 +72,24 @@ under `scripts/`.
   random access, not a plain GeoTIFF).
 - `1_osm_load.R` — OSM layer pull prototype (roads/buildings/landuse/water) for
   one agglomeration via Overpass; set `target_slug` near the top.
+- `1_osm_coverage_audit.R` — lightweight Overpass `out count;` scoping check
+  (buildings/highways per km², no geometry download) across all 100 cities,
+  run 2026-09-17 to decide whether `1_osm_load.R` is worth generalizing.
+  **Verdict: no — don't roll OSM into a cross-city app feature.** Building
+  coverage spans a >900x range (3 to 2,833 buildings/km²) and tracks mapping
+  *effort*, not urban form: Egypt's cities (incl. Cairo) median 13
+  buildings/km² vs. 1,000+ for Somalia/Uganda/DRC/Malawi/Tanzania (the
+  humanitarian/HOT-mapped cluster) — any cross-city OSM metric would mostly
+  measure donor attention, not real density or informality. A coverage floor
+  doesn't rescue it either (>500/km² keeps only 53% of cities, still biased
+  toward the same cluster); 14/100 cities also failed outright on Overpass
+  timeouts. Results: `data/intermediate/osm_coverage_audit.Rds`. OSM stays
+  useful only as a one-off, per-city validation/spot-check tool (like
+  `0_builtv_change_check.R`) — e.g. cross-checking GHSL built-up against OSM
+  digitized building footprints for individually-chosen well-covered cities
+  (Lagos, Khartoum, Kinshasa, Dar es Salaam, Juba, Mogadishu, Kampala all
+  score >1,300 buildings/km² and are good candidates) — not as a Rankings
+  column or map layer.
 - `1_edge_saturation_check.R` — scores each city for whether its Africapolis
   polygon is boundary-saturated (built-up right up to the edge, a sign the fixed
   2015 boundary caps measured growth). See "Boundary-quality follow-ups" above.

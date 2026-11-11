@@ -26,7 +26,8 @@ buw <- bu |> select(agglosname, iso3, year, a = area_total_km2) |>
 
 popw <- pop |> select(agglosname, iso3, year, p = pop) |>
   pivot_wider(names_from = year, values_from = p, names_prefix = "p") |>
-  mutate(pg_9025 = (p2025 - p1990)/p1990)
+  mutate(pg_9025   = (p2025 - p1990)/p1990,
+         cagr_pop  = (p2025/p1990)^(1/35) - 1)
 
 d <- buw |> left_join(popw, by = c("agglosname","iso3")) |>
   mutate(landcap_1990 = y1990/(p1990/1e6),   # km2 built-up per million people
@@ -56,6 +57,16 @@ print(d |> group_by(region) |> summarise(n=n(),
         `med % growth`=round(median(g_9025)*100),
         `total km2 added`=round(sum(add_9025)),
         `med CAGR %`=round(median(cagr_9025)*100,1)) |> arrange(desc(`med % growth`)))
+
+cat("\n-- Land vs. population growth, by region --\n")
+print(d |> filter(!is.na(bu_vs_pop), is.finite(bu_vs_pop)) |> group_by(region) |> summarise(
+        n=n(),
+        `med bu-growth %`=round(median(g_9025, na.rm=TRUE)*100),
+        `med pop-growth %`=round(median(pg_9025, na.rm=TRUE)*100),
+        `med pop CAGR %`=round(median(cagr_pop, na.rm=TRUE)*100,1),
+        `med bu/pop ratio`=round(median(bu_vs_pop, na.rm=TRUE),2),
+        `n land-outran-pop`=sum(bu_vs_pop>1, na.rm=TRUE)) |>
+      arrange(desc(`med pop-growth %`)))
 
 cat("\n=================  SPRAWL vs DENSIFICATION 1990->2025  =================\n")
 spj <- sp |> left_join(ci |> select(slug, agglosname, iso3), by="slug") |> mutate(region=reg(iso3))

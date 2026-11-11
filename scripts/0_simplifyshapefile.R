@@ -1,8 +1,11 @@
-# Build the canonical top-100 African agglomeration boundary set + a slim
-# attribute table, both consumed downstream.
+# Build the canonical top-200 African agglomeration boundary set + a slim
+# attribute table, both consumed downstream. (Extended from top-100 to
+# top-200 in the 2026-09-18 session; see docs/insights-1990-2025.md and the
+# CLAUDE.md Project Purpose section, which still describes the top-100 scope
+# and needs a manual doc pass to catch up.)
 #
 # Outputs:
-#   data/intermediate/agglom_top100.gpkg  -- repaired top-100 polygons, WGS84
+#   data/intermediate/agglom_top200.gpkg  -- repaired top-200 polygons, WGS84
 #     (id, slug, agglos_name, iso3, pop2020, p_tree_cov + geometry). Every
 #     extract script reads THIS instead of re-slicing the 8,784-feature raw
 #     shapefile and re-running st_make_valid().
@@ -35,7 +38,7 @@ names(v) <- janitor::make_clean_names(names(v))
 
 stopifnot(all(c("agglos_name", "iso3", "pop2020", "id") %in% names(v)))
 
-# -- top-100 by Africapolis 2020 population, with two exclusions --------------
+# -- top-200 by Africapolis 2020 population, with two exclusions --------------
 #   Kisumu:        Africapolis "Kisumu" is a ~15.5M / ~21,000 km2 mega-blob
 #                  (Lake Victoria settlement continuum), not a coherent metro.
 #   Port Harcourt: the bloom/top-code-corrected DMSP NTL series (bltcfix) is
@@ -43,35 +46,36 @@ stopifnot(all(c("agglos_name", "iso3", "pop2020", "id") %in% names(v)))
 #                  paper's Niger-Delta gas-flare masking wipes it out, so every
 #                  NTL-derived measure (lit / dim / unlit share) is unusable.
 # Each exclusion lets the next-ranked agglomeration take the freed slot.
+N_CITIES <- 200
 exclude <- c("Kisumu", "Port harcourt")
 v <- v[order(-v$pop2020), ]
 v <- v[!(v$agglos_name %in% exclude), ]
-v100 <- terra::makeValid(v[seq_len(100), ])
+v200 <- terra::makeValid(v[seq_len(N_CITIES), ])
 
-v100$slug <- janitor::make_clean_names(v100$agglos_name)
+v200$slug <- janitor::make_clean_names(v200$agglos_name)
 keep <- intersect(c("id", "slug", "agglos_name", "iso3", "pop2020", "p_tree_cov"),
-                  names(v100))
-v100 <- v100[, keep]
+                  names(v200))
+v200 <- v200[, keep]
 
 # -- verify ------------------------------------------------------------------
-vm  <- terra::project(v100, "ESRI:54009")
+vm  <- terra::project(v200, "ESRI:54009")
 a   <- terra::expanse(vm, unit = "km")
-n_bad <- sum(!terra::is.valid(v100))
+n_bad <- sum(!terra::is.valid(v200))
 if (n_bad > 0 || any(a <= 0)) {
   stop(sprintf("repair incomplete: %d invalid, %d non-positive area", n_bad, sum(a <= 0)))
 }
 
 # -- write -----------------------------------------------------------------
-terra::writeVector(v100, here("data/intermediate/agglom_top100.gpkg"), overwrite = TRUE)
+terra::writeVector(v200, here("data/intermediate/agglom_top200.gpkg"), overwrite = TRUE)
 
-as.data.frame(v100) |>
+as.data.frame(v200) |>
   dplyr::select(slug, p_tree_cov, pop2020) |>
   saveRDS(here("data/intermediate/agglom_attrs.Rds"))
 
 cat(sprintf(
-  "Wrote data/intermediate/agglom_top100.gpkg  (%d polygons, %d/%d valid, areas %.0f-%.0f km2)\n",
-  nrow(v100), sum(terra::is.valid(v100)), nrow(v100), min(a), max(a)))
+  "Wrote data/intermediate/agglom_top200.gpkg  (%d polygons, %d/%d valid, areas %.0f-%.0f km2)\n",
+  nrow(v200), sum(terra::is.valid(v200)), nrow(v200), min(a), max(a)))
 cat("      data/intermediate/agglom_attrs.Rds\n")
 cat(sprintf("Kisumu excluded; smallest agglomeration now in set: %s (pop2020 %s)\n",
-            v100$agglos_name[which.min(v100$pop2020)],
-            format(round(min(v100$pop2020)), big.mark = ",")))
+            v200$agglos_name[which.min(v200$pop2020)],
+            format(round(min(v200$pop2020)), big.mark = ",")))

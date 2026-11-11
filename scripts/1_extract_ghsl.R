@@ -13,11 +13,11 @@ dir.create(here("data/intermediate"), showWarnings = FALSE)
 # Epoch years are taken from the raster band names (set by 0_ghslprep.R), so this
 # adapts to the 6-epoch (2000–2025) or 8-epoch (1990–2025) stack automatically.
 
-# 2. Canonical top-100 agglomerations -----------------------------------------
+# 2. Canonical top-200 agglomerations -----------------------------------------
 # Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
 # (Previously: every agglomeration with pop2020 > 100000 -- now aligned to the
-# single top-100 set the rest of the pipeline uses.)
-agglom_sel <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
+# single top-200 set the rest of the pipeline uses.)
+agglom_sel <- st_read(here("data/intermediate/agglom_top200.gpkg"), quiet = TRUE)
 
 # 3. Rasters ---------------------------------------------------------------
 ####GHSL####

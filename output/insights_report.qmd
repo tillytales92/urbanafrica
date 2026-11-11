@@ -1,0 +1,418 @@
+---
+title: "Urban Africa, 1990–2025"
+subtitle: "How the 100 largest African agglomerations grew — and how they grew differently"
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-location: left
+    toc-depth: 2
+    embed-resources: true
+    code-fold: false
+    fig-width: 8
+    fig-height: 5
+    df-print: kable
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+pacman::p_load(here, dplyr, tidyr, ggplot2, plotly, scales, countrycode,
+               terra, sf, DT, htmltools, knitr)
+
+bu  <- readRDS(here("data/intermediate/africapolis_builtup.Rds"))
+pop <- readRDS(here("data/intermediate/africapolis_pop.Rds"))
+ci  <- readRDS(here("data/intermediate/city_index.Rds"))
+sp  <- readRDS(here("data/intermediate/sprawl_stats.Rds"))
+ntl <- readRDS(here("data/intermediate/africapolis_ntl.Rds"))
+es  <- readRDS(here("data/intermediate/edge_saturation_check.Rds"))
+bv  <- readRDS(here("data/intermediate/builtv_change_check.Rds"))
+
+region_levels <- c("Northern Africa", "West Africa", "Central Africa",
+                    "East Africa", "Southern Africa")
+reg <- function(iso3) {
+  r <- countrycode::countrycode(iso3, "iso3c", "region23")
+  recode(r, "Northern Africa" = "Northern Africa", "Western Africa" = "West Africa",
+         "Middle Africa" = "Central Africa", "Eastern Africa" = "East Africa",
+         "Southern Africa" = "Southern Africa")
+}
+
+# --- Same derivation as app/app.R: sprawl stats, boundary flag, and the
+# tercile-based growth-timing / growth-form tags introduced in the 2026-09-17
+# session. Kept in sync manually with app.R -- both derive deterministically
+# from the same source .Rds files.
+ci <- ci |>
+  mutate(macro_region = factor(reg(iso3), levels = region_levels),
+         pct_growth   = delta_total_km2_1990_2025 / total_km2_1990) |>
+  left_join(sp |> select(slug, sprawl_km2, intens_km2, sprawl_share,
+                          density_1990, density_2025, density_change),
+            by = "slug") |>
+  left_join(
+    es |> transmute(slug, boundary_quality = case_when(
+      is.na(edge_to_interior_ratio)    ~ "Not scored",
+      boundary_saturated & !low_signal ~ "Boundary-saturated",
+      TRUE                              ~ "OK"
+    )),
+    by = "slug"
+  )
+
+builtup_wide <- bu |>
+  select(agglosname, iso3, year, area_total_km2) |>
+  pivot_wider(names_from = year, values_from = area_total_km2, names_prefix = "y") |>
+  inner_join(ci |> select(slug, iso3, agglosname), by = c("iso3", "agglosname")) |>
+  transmute(slug, g_early = (y2005 - y1990) / y1990, g_late = (y2025 - y2010) / y2010,
+            accel = g_late - g_early, base_1990 = y1990)
+accel_terc <- quantile(builtup_wide$accel[builtup_wide$base_1990 > 20], c(1/3, 2/3), na.rm = TRUE)
+builtup_wide <- builtup_wide |>
+  mutate(growth_timing = case_when(
+    base_1990 <= 20         ~ "N/A (small base)",
+    accel >= accel_terc[2]  ~ "Accelerating",
+    accel <= accel_terc[1]  ~ "Decelerating",
+    TRUE                    ~ "Steady"
+  ))
+ci <- ci |> left_join(builtup_wide |> select(slug, growth_timing), by = "slug")
+
+form_terc <- quantile(ci$sprawl_share[ci$sprawl_km2 + ci$intens_km2 > 30], c(1/3, 2/3), na.rm = TRUE)
+ci <- ci |>
+  mutate(growth_form = case_when(
+    is.na(sprawl_share) | sprawl_km2 + intens_km2 <= 30 ~ "N/A (low growth)",
+    sprawl_share >= form_terc[2]                          ~ "Sprawl-dominant",
+    sprawl_share <= form_terc[1]                          ~ "Infill-dominant",
+    TRUE                                                  ~ "Mixed"
+  ))
+
+region_pal <- setNames(
+  c("#3B4E9C", "#3F8F9E", "#4FA870", "#B8B23C", "#D9622B"), region_levels
+)
+theme_report <- function() theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank(), plot.title.position = "plot")
+```
+
+<style>
+.finding-note { font-size: 0.85em; color: #666; border-left: 3px solid #ddd;
+  padding-left: 10px; margin: 1em 0; }
+</style>
+
+This report combines the written findings from `docs/insights-1990-2025.md` with
+the underlying charts and maps, so they can be read together. Scope: the **100
+largest African agglomerations** by Africapolis 2020 population, tracked with
+**GHSL BUILT-S / GHS-POP R2023A** (eight epochs, 1990–2025) and **bloom- &
+top-coding-corrected DMSP** nighttime lights (annual, read from 2000 here).
+Every chart below is generated live from the same `data/intermediate/*.Rds`
+files the [Shiny app](../app/app.R) reads — re-render this document
+(`quarto render output/insights_report.qmd`) any time the pipeline reruns.
+
+::: {.finding-note}
+Five caveats apply across every number below — small secondary-city % outliers
+are partly polygon artifacts (Kikima's +1116% is boundary noise, not real
+growth), Kisumu and Port Harcourt are excluded from the top-100 set, fixed
+2020-vintage Africapolis boundaries undercount cities that have sprawled past
+their polygon edge, GHS-POP is disaggregated *using* the built-up layer so
+per-capita figures are partly circular, and large NTL "dark → lit" jumps mix
+real electrification with the corrected-DMSP series' sensitivity near its
+floor. Full detail in `docs/insights-1990-2025.md`.
+:::
+
+## 1. Land grew far slower than people
+
+Built-up footprint across the top 100 grew **6,906 → 12,502 km² (+81%)** from
+1990 to 2025, while population grew **142 M → 370 M (+161%)** — nearly twice
+as fast. Median built-up land per million residents *fell*, from 48 to
+35 km². At the aggregate level, this era was **densifying, not sprawling** —
+the opposite of the usual "urban sprawl" narrative.
+
+```{r fig-1}
+agg <- bu |>
+  group_by(year) |> summarise(bu_km2 = sum(area_total_km2), .groups = "drop") |>
+  left_join(pop |> group_by(year) |> summarise(pop_m = sum(pop) / 1e6, .groups = "drop"),
+            by = "year") |>
+  mutate(`Built-up area` = 100 * bu_km2 / first(bu_km2),
+         `Population`    = 100 * pop_m  / first(pop_m)) |>
+  select(year, `Built-up area`, `Population`) |>
+  pivot_longer(-year, names_to = "series", values_to = "index")
+
+p1 <- ggplot(agg, aes(year, index, colour = series, group = series,
+                       text = sprintf("%s, %d: index %.0f", series, year, index))) +
+  geom_line(linewidth = 1.1) + geom_point(size = 2) +
+  scale_colour_manual(values = c("Built-up area" = "#c0392b", "Population" = "#2980b9")) +
+  scale_x_continuous(breaks = unique(agg$year)) +
+  labs(x = NULL, y = "Index (1990 = 100)", colour = NULL,
+       title = "Population grew far faster than built-up land, 1990–2025") +
+  theme_report()
+ggplotly(p1, tooltip = "text")
+```
+
+## 2. Two distinct worlds
+
+The genuine **sprawl frontier is Ethiopian & Kenyan secondary cities** —
+Hawassa, Sodo, Nakuru, Embu — growing 200–600% in area on 50–160% more
+people, with density roughly halving. This is a very different growth
+regime from the continent's megacities.
+
+```{r fig-2}
+d2 <- sp |>
+  left_join(ci |> select(slug, agglosname, macro_region), by = "slug") |>
+  filter(sprawl_km2 + intens_km2 > 30) |>
+  arrange(desc(sprawl_share)) |> slice_head(n = 10)
+
+ggplot(d2, aes(x = reorder(agglosname, sprawl_share), y = sprawl_share, fill = macro_region)) +
+  geom_col() + coord_flip() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_manual(values = region_pal, drop = FALSE, name = "Region") +
+  labs(x = NULL, y = "Sprawl share of 1990–2025 growth",
+       title = "The sprawl frontier: growth almost entirely onto new land",
+       subtitle = "Top 10 by sprawl share, min. 30 km² total growth") +
+  theme_report()
+```
+
+## 3. East Africa is the engine; Central Africa woke up late
+
+Median built-up % growth 1990–2025: **East 109% · West 100% · North 81% ·
+Central 48% · Southern 45%**. Timing is only visible with a 1990 baseline —
+Congo-basin cities (Brazzaville, Pointe-Noire, Lubumbashi, Libreville) were
+flat through the 1990s and only took off after 2010, while Abuja's
+new-capital build-out front-loaded and then decelerated (see §8 caveat on
+its boundary-saturation reading).
+
+```{r fig-3a}
+region_growth <- bu |>
+  left_join(ci |> select(slug, iso3, agglosname, macro_region), by = c("iso3", "agglosname")) |>
+  filter(!is.na(macro_region)) |>
+  select(slug, macro_region, year, area_total_km2) |>
+  pivot_wider(names_from = year, values_from = area_total_km2, names_prefix = "y") |>
+  mutate(pct = (y2025 - y1990) / y1990) |>
+  group_by(macro_region) |>
+  summarise(med_pct = median(pct), .groups = "drop")
+
+ggplot(region_growth, aes(x = reorder(macro_region, med_pct), y = med_pct, fill = macro_region)) +
+  geom_col(show.legend = FALSE) + coord_flip() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_manual(values = region_pal) +
+  labs(x = NULL, y = "Median built-up growth, 1990–2025",
+       title = "East Africa grew fastest; Southern Africa slowest") +
+  theme_report()
+```
+
+```{r fig-3b}
+congo_basin <- c("brazzaville", "pointe_noire", "lubumbashi", "libreville")
+d3 <- bu |>
+  left_join(ci |> select(slug, iso3, agglosname), by = c("iso3", "agglosname")) |>
+  filter(slug %in% congo_basin) |>
+  group_by(slug) |>
+  mutate(idx = 100 * area_total_km2 / area_total_km2[year == 1990]) |>
+  ungroup()
+
+p3b <- ggplot(d3, aes(year, idx, colour = agglosname, group = agglosname,
+                       text = sprintf("%s, %d: index %.0f", agglosname, year, idx))) +
+  geom_line(linewidth = 1) + geom_point(size = 1.8) +
+  geom_vline(xintercept = 2010, linetype = "dashed", colour = "grey60") +
+  scale_colour_viridis_d(option = "D", end = 0.85, name = NULL) +
+  scale_x_continuous(breaks = unique(d3$year)) +
+  labs(x = NULL, y = "Built-up index (1990 = 100)",
+       title = "Congo-basin cities: flat in the 1990s, took off after 2010",
+       subtitle = "Dashed line marks 2010") +
+  theme_report()
+ggplotly(p3b, tooltip = "text")
+```
+
+## 4. Sprawl vs. infill splits by region
+
+North African cities grew **almost entirely by filling in** — Tunis (20%
+sprawl share), Algiers (20%), Casablanca (30%) — while others densify or
+sprawl across a wide spread. This is the same comparison the app's
+Scatterplots tab offers, reproduced here for the full 100-city sample.
+
+```{r fig-4}
+d4 <- ci |> filter(!is.na(sprawl_km2), !is.na(intens_km2))
+p4 <- ggplot(d4, aes(x = intens_km2, y = sprawl_km2, size = delta_total_km2_1990_2025,
+                      colour = macro_region,
+                      text = sprintf("%s (%s)\nNew land: %.0f km² (%.0f%%)\nDensification: %.0f km² (%.0f%%)",
+                                      agglosname, iso3, sprawl_km2, sprawl_share * 100,
+                                      intens_km2, (1 - sprawl_share) * 100))) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(alpha = 0.75) +
+  scale_x_continuous(labels = label_comma(), trans = "sqrt") +
+  scale_y_continuous(labels = label_comma(), trans = "sqrt") +
+  scale_size_continuous(name = "Total growth\n(km²)", range = c(2, 10)) +
+  scale_colour_manual(values = region_pal, name = "Region") +
+  labs(x = "Densification (km², sqrt scale)", y = "New land (km², sqrt scale)",
+       title = "Sprawl vs. intensification, 1990–2025 — above diagonal = sprawl-dominant") +
+  theme_report()
+ggplotly(p4, tooltip = "text") |> layout(legend = list(orientation = "v"))
+```
+
+## 5. Lighting caught up dramatically, 2000 → 2025
+
+Biggest falls in dark-or-dim share (DN ≤ 10): Mogadishu 94% → 3%, Ikorodu
+86% → 2%, Mwanza 85% → 2%. The sprawl frontier from §2 is also the **unlit
+frontier** — the same small East African / south-eastern Nigerian cities top
+both lists.
+
+```{r fig-5}
+d5 <- ntl |>
+  filter(year %in% c(2000, 2025)) |>
+  mutate(dark_dim = (1 - ntl_lit_share) + ntl_dimlit_share) |>
+  select(agglosname, iso3, year, dark_dim) |>
+  pivot_wider(names_from = year, values_from = dark_dim, names_prefix = "y") |>
+  mutate(drop = y2000 - y2025) |>
+  arrange(desc(drop)) |> slice_head(n = 10)
+
+ggplot(d5) +
+  geom_segment(aes(x = y2000, xend = y2025, y = reorder(agglosname, drop),
+                    yend = reorder(agglosname, drop)), colour = "grey75", linewidth = 1.1) +
+  geom_point(aes(x = y2000, y = agglosname), colour = "#c0392b", size = 3) +
+  geom_point(aes(x = y2025, y = agglosname), colour = "#2980b9", size = 3) +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Dark-or-dim share of built-up (DN ≤ 10)", y = NULL,
+       title = "Lighting caught up dramatically, 2000 → 2025",
+       subtitle = "Red = 2000 · Blue = 2025") +
+  theme_report()
+```
+
+## 6. Megacities barely spread
+
+**Kinshasa +17% area** (146 → 170 km²), **Mbuji-Mayi +14%** — despite huge
+population growth. Intensifying informally inside a near-saturated
+footprint. Slowest growers by % are almost all Central + Southern Africa.
+
+```{r fig-6}
+d6 <- ci |> filter(total_km2_1990 > 50) |> arrange(pct_growth) |> slice_head(n = 8)
+ggplot(d6, aes(x = reorder(agglosname, -pct_growth), y = pct_growth, fill = macro_region)) +
+  geom_col() + coord_flip() +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_manual(values = region_pal, drop = FALSE, name = "Region") +
+  labs(x = NULL, y = "Built-up growth, 1990–2025",
+       title = "Slowest-growing established cities (> 50 km² in 1990)") +
+  theme_report()
+```
+
+## 7. Cities are sprawling out, not building up
+
+Median mean building height across the top 100 **fell from 7.67 m to
+7.25 m**, 2000–2025 (GHS-BUILT-V volume ÷ BUILT-S footprint). Footprint
+growth consistently outran volume growth — new construction is
+overwhelmingly low-rise horizontal expansion, diluting the citywide average
+height even where downtown cores may be getting taller.
+
+```{r fig-7}
+d7 <- bv |> left_join(ci |> select(slug, agglosname, iso3, macro_region, sprawl_share),
+                       by = c("agglosname", "iso3"))
+p7 <- ggplot(d7, aes(x = sprawl_share, y = d_h_tot, colour = macro_region,
+                      text = sprintf("%s (%s)\nHeight change: %+.2f m\nSprawl share: %.0f%%",
+                                      agglosname, iso3, d_h_tot, sprawl_share * 100))) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_point(alpha = 0.8, size = 2.2) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black", linewidth = 0.6) +
+  scale_x_continuous(labels = label_percent()) +
+  scale_colour_manual(values = region_pal, name = "Region") +
+  labs(x = "Sprawl share of growth (1990–2025)",
+       y = "Mean building height change, 2000→2025 (m)",
+       title = "More sprawl → more height loss (r = -0.42)") +
+  theme_report()
+ggplotly(p7, tooltip = "text")
+```
+
+## 8. Growth trajectories cluster into three characteristic types
+
+Crossing **growth timing** (1990–2005 vs. 2010–2025 rate) against **growth
+form** (sprawl share of 1990–2025 growth) — both tercile splits, so they
+self-calibrate to the sample — shows growth isn't spread evenly across all
+nine combinations. Cities cluster on the diagonal:
+
+```{r tbl-8}
+d8 <- ci |> filter(growth_form != "N/A (low growth)")
+tab <- table(d8$growth_timing, d8$growth_form)
+pct <- round(100 * prop.table(tab, margin = 1))
+pct <- pct[c("Accelerating", "Steady", "Decelerating"),
+           c("Infill-dominant", "Mixed", "Sprawl-dominant")]
+kable(pct, caption = "Growth form share (%) conditional on growth timing")
+```
+
+- **Sprawling & accelerating** (median +157% growth, 75% sprawl share, n=6):
+  almost entirely the Nigerian periphery still expanding into greenfield,
+  plus one Kenyan secondary city — Lagos, Ikorodu, Benin City, Embu.
+- **Infilling & decelerating** (median +81% growth, 42% sprawl share, n=12):
+  established regional capitals whose expansion boom is behind them —
+  Johannesburg, Accra, Tunis, Kampala.
+- **Steady & mixed** (median +96% growth, 59% sprawl share, n=9): a balanced
+  middle path — Cairo, Nairobi, Bamako, Yaoundé.
+- Checked against two confounders: not the boundary-saturation artifact
+  (Abuja is Decelerating+**Sprawl**-dominant, the opposite corner) and not a
+  city-size artifact (median 1990 footprint is ~50 km² in both the
+  Accelerating and Decelerating groups). And per §7: this is a maturation
+  into **density**, not height — infill-dominant cities still lose mean
+  building height (median −0.41 m), just more slowly than sprawl-dominant
+  ones (−0.79 m).
+
+The same pattern, seen on the map — Lagos (still sprawling into greenfield
+on its fringes) against Johannesburg (growth mostly filling in existing
+footprint):
+
+```{r map-8, fig.height=6.5, fig.width=11}
+change_df <- function(slug, label) {
+  d    <- here("data/intermediate/cities", slug)
+  res  <- terra::rast(file.path(d, "res_wgs84.tif"))
+  nres <- terra::rast(file.path(d, "nres_wgs84.tif"))
+  chg  <- (res[["2025"]] - res[["1990"]]) + (nres[["2025"]] - nres[["1990"]])
+  chg[chg <= 0] <- NA
+  chg <- sqrt(terra::clamp(chg, upper = 4400, values = TRUE))
+  df <- as.data.frame(chg, xy = TRUE)
+  names(df)[3] <- "value"
+  df$city <- label
+  df
+}
+metro_coords <- function(slug, label) {
+  g  <- sf::st_read(here("data/intermediate/cities", slug, "metro.gpkg"), quiet = TRUE) |>
+    sf::st_cast("MULTIPOLYGON") |> sf::st_cast("POLYGON")
+  xy <- sf::st_coordinates(g)
+  data.frame(x = xy[, "X"], y = xy[, "Y"],
+             grp = paste(xy[, "L1"], xy[, "L2"]), city = label)
+}
+
+map_labels <- c(lagos = "Lagos (sprawling & accelerating)",
+                 johannesburg = "Johannesburg (infilling & decelerating)")
+d_map <- bind_rows(lapply(names(map_labels), function(s) change_df(s, map_labels[s])))
+metro_map <- bind_rows(lapply(names(map_labels), function(s) metro_coords(s, map_labels[s])))
+d_map$city <- factor(d_map$city, levels = map_labels)
+metro_map$city <- factor(metro_map$city, levels = map_labels)
+
+ggplot() +
+  geom_tile(data = d_map, aes(x, y, fill = value)) +
+  geom_path(data = metro_map, aes(x, y, group = grp), colour = "black", linewidth = 0.4) +
+  facet_wrap(~city, scales = "free") +
+  scale_fill_viridis_c(option = "D", na.value = "transparent",
+                        labels = function(x) comma(round(x^2)), name = "m² growth") +
+  labs(title = "Built-up growth 1990→2025: sprawl (Lagos) vs. infill (Johannesburg)") +
+  theme_void(base_size = 12) +
+  theme(strip.text = element_text(face = "bold", size = 12), legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA))
+```
+
+## Explore all 100 cities
+
+```{r tbl-all}
+ci |>
+  transmute(
+    City = agglosname, Country = countrycode(iso3, "iso3c", "country.name"),
+    Region = as.character(macro_region),
+    `Built-up 1990 (km²)` = round(total_km2_1990, 1),
+    `Built-up 2025 (km²)` = round(total_km2_2025, 1),
+    `Growth (%)` = round(pct_growth * 100, 1),
+    `Sprawl (%)` = round(sprawl_share * 100, 1),
+    `Growth timing` = growth_timing, `Growth form` = growth_form,
+    `Boundary quality` = boundary_quality
+  ) |>
+  arrange(desc(`Growth (%)`)) |>
+  datatable(filter = "top", rownames = FALSE,
+            options = list(pageLength = 15, order = list(list(5, "desc"))))
+```
+
+---
+
+<p style="font-size:0.8em;color:#888">
+Generated from `data/intermediate/*.Rds` — same source data as the Shiny app
+(`app/app.R`). Full write-up with all caveats: `docs/insights-1990-2025.md`.
+Re-render: `quarto render output/insights_report.qmd` from the project root.
+</p>

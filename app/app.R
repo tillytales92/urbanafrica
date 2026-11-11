@@ -692,7 +692,7 @@ ui <- page_navbar(
       style = "padding: 12px",
       div(
         style = "margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap",
-        h5("Rankings — 100 largest African agglomerations", style = "margin: 0"),
+        h5("Rankings — 200 largest African agglomerations", style = "margin: 0"),
         div(
           style = "display: flex; align-items: center; gap: 12px",
           radioButtons("rank_view", NULL,
@@ -731,7 +731,7 @@ ui <- page_navbar(
       h3("Urban Africa — methodology & data sources"),
       p(
         "This app tracks urban built-up expansion across the ",
-        tags$b("100 largest African agglomerations"), " (by 2020 population) from 1990 to 2025.",
+        tags$b("200 largest African agglomerations"), " (by 2020 population) from 1990 to 2025.",
         " It combines satellite-derived built-up surface data with nighttime light (NTL) composites",
         " to characterise both the ", em("extent"), " and the ", em("form"), " of urban growth —",
         " distinguishing sprawl from densification and lit (formal) from unlit (informal) built-up."
@@ -807,7 +807,7 @@ ui <- page_navbar(
           " Urban agglomeration polygons, 2020 population estimates, and tree-cover percentage",
           " for African agglomerations (OECD/Sahel and West Africa Club, SWAC).",
           " Provides the spatial units used to aggregate all raster statistics.",
-          " Polygon geometry for the top-100 set is repaired (ring-winding and degenerate-vertex",
+          " Polygon geometry for the top-200 set is repaired (ring-winding and degenerate-vertex",
           " fixes) before extraction. Two agglomerations are excluded and replaced by the",
           " next-ranked: ", tags$b("Kisumu"), " (Africapolis defines it as a ~15.5-million-person,",
           " ~21,000 km² Lake-Victoria settlement continuum, not a coherent metro) and ",
@@ -1478,7 +1478,7 @@ server <- function(input, output, session) {
         labs(
           x     = "Built-up extent 1990 (km², sqrt scale)",
           y     = "Built-up growth 1990–2025 (km², sqrt scale)",
-          title = "Initial built-up extent vs. growth — 100 largest African agglomerations"
+          title = "Initial built-up extent vs. growth — 200 largest African agglomerations"
         ) +
         theme_minimal(base_size = 13) +
         theme(legend.position = "right", panel.grid.minor = element_blank())

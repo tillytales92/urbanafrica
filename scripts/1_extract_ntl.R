@@ -7,9 +7,9 @@ pacman::p_load(
   raster  # needed only for leaflet::addRasterImage()
 )
 
-# 2. Canonical top-100 agglomerations -----------------------------------------
+# 2. Canonical top-200 agglomerations -----------------------------------------
 # Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
-agglom_100 <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
+agglom_100 <- st_read(here("data/intermediate/agglom_top200.gpkg"), quiet = TRUE)
 
 # 3. Raster ---------------------------------------------------------------
 # Bloom- + top-coding-corrected DMSP series (Chiovelli, Michalopoulos,

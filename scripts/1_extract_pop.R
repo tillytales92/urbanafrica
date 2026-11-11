@@ -20,9 +20,9 @@ if (!file.exists(pop_path)) {
   stop("Missing ", pop_path, " -- run scripts/0_popprep.R first.")
 }
 
-# -- 2. Canonical top-100 agglomerations ---------------------------------------
+# -- 2. Canonical top-200 agglomerations ---------------------------------------
 # Repaired geometry + Kisumu excluded; see scripts/0_simplifyshapefile.R.
-agglom_100 <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
+agglom_100 <- st_read(here("data/intermediate/agglom_top200.gpkg"), quiet = TRUE)
 
 # -- 3. Raster -----------------------------------------------------------------
 pop_africa <- terra::rast(pop_path)

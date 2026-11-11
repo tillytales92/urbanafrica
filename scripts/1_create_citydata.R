@@ -51,9 +51,9 @@ pop_path   <- here("data/intermediate/raster/pop_africa.tif")
 pop_africa <- if (file.exists(pop_path)) terra::rast(pop_path) else NULL
 if (is.null(pop_africa)) message("NOTE: ", pop_path, " not found — population layers will be skipped.")
 
-#Canonical top-100 agglomerations (repaired geometry + Kisumu excluded;
+#Canonical top-200 agglomerations (repaired geometry + Kisumu excluded;
 # see scripts/0_simplifyshapefile.R)
-agglom_100 <- st_read(here("data/intermediate/agglom_top100.gpkg"), quiet = TRUE)
+agglom_100 <- st_read(here("data/intermediate/agglom_top200.gpkg"), quiet = TRUE)
 
 #Processing function
 process_city <- function(city_row, total_r, nres_r, ntl_r, pop_r = NULL,

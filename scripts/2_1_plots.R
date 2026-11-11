@@ -63,7 +63,7 @@ p_res_nres <- ts_long |>
   scale_y_continuous(labels = label_number(suffix = " km²", big.mark = ",")) +
   labs(
     title    = "Built-Up Area Over Time — Top 16 African Metros",
-    subtitle = "GHSL-BUILT-S R2023 (Africapolis top-100); ranked by absolute total growth 1990–2025",
+    subtitle = "GHSL-BUILT-S R2023 (Africapolis top-200); ranked by absolute total growth 1990–2025",
     x        = NULL,
     y        = "Built-up area",
     colour   = NULL
@@ -117,7 +117,7 @@ p_dist <- ts_wide |>
   scale_y_continuous(labels = label_percent(accuracy = 1)) +
   labs(
     title    = "Non-Residential Built-Up Share Across African Metros",
-    subtitle = "Africapolis (pop2020 > 3M); each box = all metros for that year",
+    subtitle = "Africapolis top-200; each box = all metros for that year",
     x        = NULL,
     y        = "Non-residential share"
   ) +
@@ -197,7 +197,7 @@ if (!file.exists(ntl_path)) {
     scale_y_continuous(labels = label_percent(accuracy = 1)) +
     labs(
       title    = "Dark-or-Dim Share Across African Metros",
-      subtitle = "Africapolis top-100; each box = all metros for that year",
+      subtitle = "Africapolis top-200; each box = all metros for that year",
       x        = NULL,
       y        = "Dark-or-dim share"
     ) +

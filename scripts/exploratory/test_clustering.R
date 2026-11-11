@@ -4,9 +4,10 @@ city       <- "accra"
 K          <- 6      # number of trajectory types — adjust after inspecting elbow plot
 cities_dir <- here("data/intermediate/cities")
 
-# Load all 6 epochs of total built-up (res + nres), WGS84 for display
+# Load all 8 epochs of total built-up (res + nres), WGS84 for display
 r_tot  <- terra::rast(file.path(cities_dir, city, "total_wgs84.tif"))
-epochs <- as.integer(names(r_tot))   # 2000 2005 2010 2015 2020 2025
+epochs <- as.integer(names(r_tot))   # 1990 1995 2000 2005 2010 2015 2020 2025
+baseline <- as.character(min(epochs))
 
 # ── Feature matrix ─────────────────────────────────────────────────────────────
 # Rows = pixels, cols = epochs. Keep only pixels that ever had any built-up.
@@ -15,13 +16,13 @@ keep      <- rowSums(v > 0, na.rm = TRUE) > 0 & complete.cases(v)
 v_built   <- v[keep, ]
 cat("Built-up pixels:", nrow(v_built), "of", nrow(v), "\n")
 
-# Flag pixels that were zero in 2000 — these are pure new land (sprawl).
+# Flag pixels that were zero in the baseline epoch — these are pure new land (sprawl).
 # Column z-score scaling alone cannot separate them from established low-density
-# pixels (both sit below the 2000 epoch mean), so we force the separation by
-# adding a binary 2000-status indicator with extra weight before scaling.
-new_land_flag <- as.integer(v_built[, "2000"] == 0)
-cat("Pure new-land pixels (v2000=0):", sum(new_land_flag),
-    sprintf("(%.1f%%)\n", mean(new_land_flag) * 100))
+# pixels (both sit below the baseline epoch mean), so we force the separation by
+# adding a binary baseline-status indicator with extra weight before scaling.
+new_land_flag <- as.integer(v_built[, baseline] == 0)
+cat("Pure new-land pixels (v", baseline, "=0):", sum(new_land_flag),
+    sprintf("(%.1f%%)\n", mean(new_land_flag) * 100), sep = "")
 
 # Augmented feature matrix: 6 epoch values + weighted new-land indicator.
 # Weight = range of epoch values so the flag has similar leverage as a full epoch.
@@ -59,7 +60,7 @@ centers_orig[centers_orig < 0] <- 0
 colnames(centers_orig) <- as.character(epochs)
 
 # The indicator column (col 7) back-transformed tells us: clusters with a high
-# value are dominated by pixels that were zero in 2000 (new land).
+# value are dominated by pixels that were zero in the baseline epoch (new land).
 indicator_bt <- centers_full[, ncol(centers_full)]
 new_land_cut <- 0.5 * flag_weight   # midpoint of the indicator's [0, flag_weight] range
 
@@ -74,9 +75,9 @@ sizes <- as.integer(table(km$cluster)[seq_len(K)])
 ct <- as.data.frame(centers_orig) |>
   dplyr::mutate(
     cluster     = factor(seq_len(K)),
-    v2000       = .data[["2000"]],
+    v_base      = .data[[baseline]],
     v2025       = .data[["2025"]],
-    delta       = v2025 - v2000,
+    delta       = v2025 - v_base,
     is_new_land = indicator_bt > new_land_cut,
     type        = dplyr::case_when(
       is_new_land  & v2025 >= thresh_hi  ~ "new land — dense (sprawl)",
@@ -86,7 +87,7 @@ ct <- as.data.frame(centers_orig) |>
       TRUE                               ~ "mixed / transitional"
     )
   ) |>
-  dplyr::select(cluster, type, v2000, v2025, delta)
+  dplyr::select(cluster, type, v_base, v2025, delta)
 
 # ── MANUAL LABELS — edit after inspecting plots ────────────────────────────────
 # cluster_labels <- c("1"="stable core","2"="intensification","3"="new land", ...)
