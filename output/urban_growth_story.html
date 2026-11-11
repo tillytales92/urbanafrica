@@ -1,0 +1,475 @@
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>The Shape of Growth</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+/* Layout concept: a sticky night-sky bubble chart pinned beside a scrolling
+   column of short story cards; a continuous scroll-position reads out a
+   single year (1990->2025) driving every bubble's position, independent of
+   which story card happens to be centered -- the chart never re-scales. */
+:root{
+  --bg:#0a1119; --bg-raised:#121c29; --bg-card:#16222f;
+  --fg:#e9eef5; --fg-dim:#8a9bb0; --fg-faint:#56677c;
+  --line:#22303f; --line-soft:#1a2531;
+  --accent:#ffb454; --accent-dim:#8a6a3a;
+  --r-north:#5fb3d9; --r-west:#e8794f; --r-central:#8d7fd1; --r-east:#5fd3a0; --r-south:#e8637a;
+  --muted-dot:#3c4b5e;
+  --font-display:'Space Grotesk',system-ui,sans-serif;
+  --font-body:'Inter',system-ui,sans-serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--bg); color:var(--fg); font-family:var(--font-body);
+  padding-left:max(16px, env(safe-area-inset-left,0px));
+  padding-right:max(16px, env(safe-area-inset-right,0px));
+  line-height:1.5;
+}
+h1,h2,h3{font-family:var(--font-display); font-weight:600; text-wrap:balance; margin:0}
+.mono{font-family:var(--font-mono); font-variant-numeric:tabular-nums}
+.wrap{max-width:1180px; margin:0 auto}
+.narrow{max-width:640px; margin:0 auto}
+
+/* ---------- hero ---------- */
+.hero{padding:88px 0 56px; border-bottom:1px solid var(--line-soft)}
+.eyebrow{
+  font-family:var(--font-mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--accent); margin:0 0 18px;
+}
+.hero h1{font-size:clamp(34px,6vw,58px); line-height:1.05; letter-spacing:-0.01em}
+.hero p.lede{font-size:19px; color:var(--fg-dim); max-width:640px; margin:20px 0 0}
+.hero .meta{display:flex; gap:28px; flex-wrap:wrap; margin-top:40px}
+.hero .meta div{font-family:var(--font-mono); font-size:13px; color:var(--fg-faint)}
+.hero .meta b{display:block; font-family:var(--font-display); font-size:26px; color:var(--fg); font-weight:600}
+
+/* ---------- scrolly ---------- */
+.scrolly-wrap{display:flex; gap:40px; align-items:flex-start; padding:48px 0}
+.graphic-col{position:sticky; top:0; height:100vh; flex:0 0 58%; min-width:0;
+  display:flex; align-items:center; justify-content:center}
+.steps-col{flex:1 1 42%; min-width:0; display:flex; flex-direction:column; gap:38vh}
+.steps-col::before{content:""; display:block; height:6vh}
+.steps-col::after{content:""; display:block; height:10vh}
+.step{
+  background:var(--bg-card); border:1px solid var(--line); border-radius:3px;
+  padding:22px 24px; max-width:420px; opacity:.38; transform:translateY(4px);
+  transition:opacity .35s ease, transform .35s ease, border-color .35s ease;
+}
+.step.active{opacity:1; transform:translateY(0); border-color:var(--accent-dim)}
+.step .step-no{font-family:var(--font-mono); font-size:12px; color:var(--fg-faint); letter-spacing:.08em}
+.step.active .step-no{color:var(--accent)}
+.step h3{font-size:19px; margin-top:6px}
+.step p{color:var(--fg-dim); font-size:15px; margin:8px 0 0}
+.step .figs{display:flex; gap:18px; margin-top:14px; font-family:var(--font-mono); font-size:13px; flex-wrap:wrap}
+.step .figs span{color:var(--fg-faint)}
+.step .figs b{color:var(--fg); font-weight:500}
+
+.chart-card{
+  background:var(--bg-raised); border:1px solid var(--line); border-radius:4px;
+  width:100%; max-width:640px; padding:18px 18px 10px;
+}
+.chart-head{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px}
+.chart-head .title{font-size:13px; color:var(--fg-dim)}
+.chart-head .year{font-family:var(--font-mono); font-size:34px; font-weight:500; color:var(--accent)}
+svg{display:block; width:100%; height:auto; overflow:visible}
+.axis-label{font-family:var(--font-mono); font-size:10.5px; fill:var(--fg-faint); letter-spacing:.03em}
+.grid line{stroke:var(--line-soft)}
+.grid path{display:none}
+.tick text{font-family:var(--font-mono); font-size:10px; fill:var(--fg-faint)}
+.tick line{stroke:var(--line)}
+.domain{stroke:var(--line)}
+circle.dot-muted{fill:var(--muted-dot); fill-opacity:.55; stroke:none}
+circle.dot-hl{stroke-width:1.4px; fill-opacity:.88}
+circle.dot-hl.spot{stroke:var(--fg); stroke-width:2.4px}
+.dot-label{font-family:var(--font-mono); font-size:10.5px; fill:var(--fg-dim); pointer-events:none}
+.dot-label.spot{fill:var(--fg); font-weight:500}
+.trail{fill:none; stroke-width:1.4px; opacity:.55}
+.legend-region{display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; font-family:var(--font-mono); font-size:11px; color:var(--fg-dim)}
+.legend-region .sw{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:-1px}
+.legend-region button{
+  background:none; border:none; color:inherit; font-family:inherit; font-size:inherit;
+  cursor:pointer; padding:2px 0; opacity:1; transition:opacity .2s;
+}
+.legend-region button.dimmed{opacity:.35}
+.scroll-cue{font-family:var(--font-mono); font-size:11px; color:var(--fg-faint); text-align:center; margin-top:10px; letter-spacing:.04em}
+
+/* ---------- explore ---------- */
+.explore{padding:30px 0 90px; border-top:1px solid var(--line-soft)}
+.explore h2{font-size:26px}
+.explore .lede{color:var(--fg-dim); font-size:15px; max-width:560px; margin:8px 0 28px}
+.explore-panel{display:flex; gap:40px; flex-wrap:wrap; align-items:flex-start}
+.explore-chart{flex:1 1 560px; min-width:0}
+.controls{flex:0 0 260px; display:flex; flex-direction:column; gap:16px}
+.controls .row{display:flex; align-items:center; gap:10px}
+button.play{
+  background:var(--accent); color:#1a1205; border:none; border-radius:3px;
+  font-family:var(--font-mono); font-size:13px; font-weight:500; padding:9px 16px;
+  cursor:pointer; letter-spacing:.02em;
+}
+button.play:hover{background:#ffc473}
+input[type=range]{width:100%; accent-color:var(--accent)}
+.year-readout{font-family:var(--font-mono); font-size:22px; color:var(--accent); min-width:54px}
+.controls .hint{font-size:12.5px; color:var(--fg-faint); line-height:1.5}
+
+/* ---------- footer ---------- */
+footer{padding:30px 0 60px; border-top:1px solid var(--line-soft)}
+footer p{font-size:12.5px; color:var(--fg-faint); max-width:720px; margin:6px 0}
+footer a{color:var(--fg-dim)}
+
+#tooltip{
+  position:fixed; pointer-events:none; z-index:50; background:var(--bg-card);
+  border:1px solid var(--line); border-radius:3px; padding:9px 12px; font-size:12.5px;
+  max-width:220px; opacity:0; transition:opacity .1s; transform:translate(-50%,-100%);
+}
+#tooltip .name{font-family:var(--font-display); font-weight:600; font-size:14px; color:var(--fg)}
+#tooltip .row{display:flex; justify-content:space-between; gap:10px; margin-top:3px; font-family:var(--font-mono); color:var(--fg-dim)}
+#tooltip .row b{color:var(--fg); font-weight:500}
+
+@media (max-width:860px){
+  .scrolly-wrap{flex-direction:column; gap:0}
+  .graphic-col{position:sticky; top:0; height:54vh; flex:none; width:100%; z-index:5;
+    background:var(--bg); padding-top:10px}
+  .steps-col{gap:28vh; padding-top:6vh}
+  .chart-card{max-width:none}
+  .explore-panel{flex-direction:column}
+  .controls{flex:none; width:100%}
+}
+</style>
+
+<div class="wrap hero">
+  <p class="eyebrow">Data story &middot; 100 African cities &middot; 1990&ndash;2025</p>
+  <h1>The shape of growth</h1>
+  <p class="lede">Every one of Africa's 100 largest cities added people between 1990 and 2025.
+    Far fewer of them added land at the same pace. Watch how each city's land and
+    density moved as you scroll &mdash; and where ten of them pulled apart from the pack.</p>
+  <div class="meta">
+    <div><b>6,906 &rarr; 12,502 km&sup2;</b>built-up land, +81%</div>
+    <div><b>142M &rarr; 370M</b>people, +161%</div>
+    <div><b>35 km&sup2;</b>median land per million people in 2025, down from 48</div>
+  </div>
+</div>
+
+<div class="wrap scrolly-wrap" id="scrolly">
+  <div class="graphic-col">
+    <div class="chart-card">
+      <div class="chart-head">
+        <div class="title">Built-up area (km&sup2;) vs. population density (people/km&sup2;)</div>
+        <div class="year mono" id="year-readout">1990</div>
+      </div>
+      <svg id="chart" viewBox="0 0 600 460"></svg>
+      <div class="legend-region" id="legend"></div>
+      <p class="scroll-cue" id="scroll-cue">scroll to watch 1990&ndash;2025 &darr;</p>
+    </div>
+  </div>
+
+  <div class="steps-col" id="steps"></div>
+</div>
+
+<div class="wrap explore">
+  <h2>Explore all 100 yourself</h2>
+  <p class="lede">Same chart, now under your control. Press play, drag the year, or click a region
+    to isolate it. Hover any dot &mdash; including the 90 not named above &mdash; for its numbers.</p>
+  <div class="explore-panel">
+    <div class="explore-chart">
+      <svg id="chart2" viewBox="0 0 600 460"></svg>
+      <div class="legend-region" id="legend2"></div>
+    </div>
+    <div class="controls">
+      <div class="row">
+        <button class="play" id="play-btn">&#9654; Play</button>
+        <span class="year-readout mono" id="year-readout2">1990</span>
+      </div>
+      <input type="range" id="year-slider" min="1990" max="2025" step="1" value="1990">
+      <p class="hint">Bubble size is population. Position never rescales &mdash; only the dots move &mdash; so
+        a city sliding right and down is spreading out faster than it's filling in; one sliding up is
+        densifying.</p>
+    </div>
+  </div>
+</div>
+
+<footer class="wrap">
+  <p><b>Sources.</b> GHSL BUILT-S &amp; GHS-POP R2023A (European Commission JRC), eight epochs
+    1990&ndash;2025. Boundaries: Africapolis 2020 (OECD/SWAC), fixed at their 2020 vintage.</p>
+  <p><b>Caveat.</b> A handful of cities had already sprawled past their mapped boundary by 1990
+    (Kinshasa, Luanda) &mdash; their land growth here is a floor, not a ceiling. Several small secondary
+    cities' large % moves are partly polygon artifacts, not pure growth.</p>
+</footer>
+
+<div id="tooltip"></div>
+
+<script>
+(function(){
+"use strict";
+
+var REGION_COLOR_HEX = {
+  "Northern Africa": "#5fb3d9", "West Africa": "#e8794f",
+  "Central Africa": "#8d7fd1", "East Africa": "#5fd3a0", "Southern Africa": "#e8637a"
+};
+var YEARS = [1990,1995,2000,2005,2010,2015,2020,2025];
+var HL_SLUGS = ["lagos","johannesburg","kinshasa","al_qahira","nairobi","kigali","abuja","hawassa","tunis","juba"];
+
+var tooltip = document.getElementById("tooltip");
+function showTip(evt, d, year){
+  tooltip.innerHTML =
+    '<div class="name">'+d.name+' <span style="color:var(--fg-faint)">('+d.iso3+')</span></div>'+
+    '<div class="row"><span>Year</span><b>'+year+'</b></div>'+
+    '<div class="row"><span>Built-up</span><b>'+d3.format(",.0f")(d.area)+' km²</b></div>'+
+    '<div class="row"><span>Population</span><b>'+d3.format(",.0f")(d.pop)+'</b></div>'+
+    '<div class="row"><span>Density</span><b>'+d3.format(",.0f")(d.density)+'/km²</b></div>';
+  tooltip.style.left = evt.clientX + "px";
+  tooltip.style.top = (evt.clientY - 14) + "px";
+  tooltip.style.opacity = 1;
+}
+function hideTip(){ tooltip.style.opacity = 0; }
+
+fetch("urban_growth_story_data.json").then(function(r){ return r.json(); }).then(init).catch(function(err){
+  document.getElementById("scrolly").innerHTML =
+    '<p style="color:var(--fg-dim);padding:40px 0">Could not load urban_growth_story_data.json &mdash; '+err+'</p>';
+});
+
+function init(RAW){
+  var byCity = {};
+  RAW.cities.forEach(function(r){
+    (byCity[r.slug] = byCity[r.slug] || []).push(r);
+  });
+  Object.keys(byCity).forEach(function(s){ byCity[s].sort(function(a,b){return a.year-b.year;}); });
+
+  var storyBySlug = {};
+  RAW.highlight.forEach(function(h){ storyBySlug[h.slug] = h.story; });
+
+  var allSlugs = Object.keys(byCity);
+  var areaExt = d3.extent(RAW.cities, function(d){return d.area_km2;});
+  var densExt = d3.extent(RAW.cities, function(d){return d.density;});
+  var popExt  = d3.extent(RAW.cities, function(d){return d.pop;});
+
+  function interp(slug, year){
+    var rows = byCity[slug];
+    var i = 0;
+    while(i < rows.length-1 && rows[i+1].year < year) i++;
+    var a = rows[Math.min(i, rows.length-2)], b = rows[Math.min(i+1, rows.length-1)];
+    if(a.year === b.year){ var t0=0; } else { var t0 = (year - a.year) / (b.year - a.year); }
+    t0 = Math.max(0, Math.min(1, t0));
+    var name = a.name, iso3 = a.iso3, region = a.region;
+    return {
+      slug:slug, name:name, iso3:iso3, region:region,
+      area: a.area_km2 + (b.area_km2 - a.area_km2) * t0,
+      pop: a.pop + (b.pop - a.pop) * t0,
+      density: a.density + (b.density - a.density) * t0
+    };
+  }
+
+  function buildChart(svgSel, opts){
+    var vb = [0,0,600,460];
+    var margin = {top:14, right:18, bottom:38, left:48};
+    var W = vb[2], H = vb[3];
+    var innerW = W - margin.left - margin.right, innerH = H - margin.top - margin.bottom;
+
+    var x = d3.scaleLog().domain([areaExt[0]*0.85, areaExt[1]*1.15]).range([0, innerW]);
+    var y = d3.scaleLog().domain([densExt[0]*0.85, densExt[1]*1.15]).range([innerH, 0]);
+    var r = d3.scaleSqrt().domain([0, popExt[1]]).range([2.2, 30]);
+
+    var areaTicks = [10,25,50,100,250,500,900].filter(function(v){return v>=x.domain()[0] && v<=x.domain()[1];});
+    var densTicks = [2000,5000,10000,25000,50000,100000,175000].filter(function(v){return v>=y.domain()[0] && v<=y.domain()[1];});
+
+    var svg = d3.select(svgSel).attr("viewBox", vb.join(" "));
+    svg.selectAll("*").remove();
+    var g = svg.append("g").attr("transform", "translate("+margin.left+","+margin.top+")");
+
+    g.append("g").attr("class","grid")
+      .selectAll("line").data(densTicks).join("line")
+      .attr("x1",0).attr("x2",innerW).attr("y1",function(d){return y(d);}).attr("y2",function(d){return y(d);});
+
+    g.append("g").attr("class","x axis").attr("transform","translate(0,"+innerH+")")
+      .call(d3.axisBottom(x).tickValues(areaTicks).tickFormat(d3.format(",")).tickSize(4))
+      .call(function(gg){ gg.select(".domain").remove(); });
+    g.append("g").attr("class","y axis")
+      .call(d3.axisLeft(y).tickValues(densTicks).tickFormat(d3.format(",")).tickSize(4))
+      .call(function(gg){ gg.select(".domain").remove(); });
+
+    g.append("text").attr("class","axis-label")
+      .attr("x", innerW).attr("y", innerH + 34).attr("text-anchor","end")
+      .text("built-up area, km² (log)");
+    g.append("text").attr("class","axis-label")
+      .attr("transform","rotate(-90)").attr("x", 0).attr("y", -36).attr("text-anchor","end")
+      .text("people / km² (log)");
+
+    var trailLayer = g.append("g").attr("class","trails");
+    var dotLayerMuted = g.append("g").attr("class","dots-muted");
+    var dotLayerHl = g.append("g").attr("class","dots-hl");
+    var labelLayer = g.append("g").attr("class","labels");
+
+    var line = d3.line().x(function(d){return x(d.area);}).y(function(d){return y(d.density);}).curve(d3.curveCatmullRom.alpha(0.6));
+
+    function update(year, spotlightSlug, activeRegion){
+      var pts = allSlugs.map(function(s){ return interp(s, year); });
+      var muted = opts.showAll === false ? [] : pts.filter(function(d){ return HL_SLUGS.indexOf(d.slug) < 0; });
+      var hl = pts.filter(function(d){ return HL_SLUGS.indexOf(d.slug) >= 0; });
+
+      var mutedSel = dotLayerMuted.selectAll("circle").data(muted, function(d){return d.slug;});
+      mutedSel.join("circle").attr("class","dot-muted")
+        .attr("cx", function(d){return x(d.area);}).attr("cy", function(d){return y(d.density);})
+        .attr("r", function(d){return r(d.pop);})
+        .style("opacity", function(d){ return (!activeRegion || d.region===activeRegion) ? 1 : 0.12; })
+        .on("mousemove", function(evt,d){ showTip(evt,d,Math.round(year)); })
+        .on("mouseleave", hideTip);
+
+      var hlSel = dotLayerHl.selectAll("circle").data(hl, function(d){return d.slug;});
+      hlSel.join("circle")
+        .attr("class", function(d){ return "dot-hl" + (d.slug===spotlightSlug ? " spot" : ""); })
+        .attr("cx", function(d){return x(d.area);}).attr("cy", function(d){return y(d.density);})
+        .attr("r", function(d){return r(d.pop);})
+        .attr("fill", function(d){return REGION_COLOR_HEX[d.region];})
+        .attr("stroke", function(d){return d.slug===spotlightSlug ? null : REGION_COLOR_HEX[d.region];})
+        .style("opacity", function(d){ return (!activeRegion || d.region===activeRegion) ? 1 : 0.15; })
+        .on("mousemove", function(evt,d){ showTip(evt,d,Math.round(year)); })
+        .on("mouseleave", hideTip);
+
+      if(opts.labels !== false){
+        var labelSel = labelLayer.selectAll("text").data(hl, function(d){return d.slug;});
+        labelSel.join("text")
+          .attr("class", function(d){ return "dot-label" + (d.slug===spotlightSlug ? " spot" : ""); })
+          .attr("x", function(d){return x(d.area) + r(d.pop) + 4;})
+          .attr("y", function(d){return y(d.density) + 3;})
+          .style("opacity", function(d){ return (!activeRegion || d.region===activeRegion) ? 1 : 0.15; })
+          .text(function(d){return d.name;});
+      }
+
+      if(opts.trails !== false && spotlightSlug){
+        var rows = byCity[spotlightSlug].filter(function(rr){ return rr.year <= year; });
+        var cur = interp(spotlightSlug, year);
+        var trailPts = rows.map(function(rr){return {area:rr.area_km2, density:rr.density};}).concat([{area:cur.area, density:cur.density}]);
+        var trailSel = trailLayer.selectAll("path").data([trailPts]);
+        trailSel.join("path").attr("class","trail")
+          .attr("stroke", REGION_COLOR_HEX[cur.region]).attr("d", line);
+      } else {
+        trailLayer.selectAll("path").remove();
+      }
+    }
+    return {update:update, x:x, y:y};
+  }
+
+  function buildLegendStatic(container){
+    container.innerHTML = "";
+    Object.keys(REGION_COLOR_HEX).forEach(function(region){
+      var span = document.createElement("span");
+      span.innerHTML = '<span class="sw" style="background:'+REGION_COLOR_HEX[region]+'"></span>'+region;
+      container.appendChild(span);
+    });
+    var other = document.createElement("span");
+    other.style.color = "var(--fg-faint)";
+    other.innerHTML = '<span class="sw" style="background:var(--muted-dot)"></span>other 90 cities';
+    container.appendChild(other);
+  }
+
+  function buildLegend(container, onToggle){
+    container.innerHTML = "";
+    var active = null;
+    Object.keys(REGION_COLOR_HEX).forEach(function(region){
+      var btn = document.createElement("button");
+      btn.innerHTML = '<span class="sw" style="background:'+REGION_COLOR_HEX[region]+'"></span>'+region;
+      btn.addEventListener("click", function(){
+        active = (active === region) ? null : region;
+        Array.prototype.forEach.call(container.querySelectorAll("button"), function(b,i){
+          b.classList.toggle("dimmed", active && Object.keys(REGION_COLOR_HEX)[i] !== active);
+        });
+        onToggle(active);
+      });
+      container.appendChild(btn);
+    });
+    var other = document.createElement("span");
+    other.style.color = "var(--fg-faint)";
+    other.innerHTML = '<span class="sw" style="background:var(--muted-dot)"></span>other 90 cities';
+    container.appendChild(other);
+  }
+
+  // ---------------- scrolly chart ----------------
+  var chart1 = buildChart("#chart", {labels:true, trails:true, showAll:true});
+  buildLegendStatic(document.getElementById("legend"));
+  chart1.update(1990, null, null);
+
+  var stepsEl = document.getElementById("steps");
+  HL_SLUGS.forEach(function(slug, i){
+    var d0 = byCity[slug][0], d1 = byCity[slug][byCity[slug].length-1];
+    var pctArea = Math.round((d1.area_km2/d0.area_km2 - 1)*100);
+    var pctPop = Math.round((d1.pop/d0.pop - 1)*100);
+    var div = document.createElement("div");
+    div.className = "step"; div.dataset.step = i; div.dataset.slug = slug;
+    div.innerHTML =
+      '<div class="step-no">0'+(i+1)+' &middot; '+d0.name.toUpperCase()+', '+d0.iso3+'</div>'+
+      '<h3>'+d0.name+'</h3>'+
+      '<p>'+storyBySlug[slug]+'</p>'+
+      '<div class="figs"><span>Land <b>+'+pctArea+'%</b></span><span>People <b>+'+pctPop+'%</b></span></div>';
+    stepsEl.appendChild(div);
+  });
+
+  var yearReadout = document.getElementById("year-readout");
+  var scrollyWrap = document.getElementById("scrolly");
+  var ticking = false;
+  function onScroll(){
+    if(ticking) return;
+    ticking = true;
+    requestAnimationFrame(function(){
+      var rect = scrollyWrap.getBoundingClientRect();
+      var vh = window.innerHeight;
+      var total = rect.height - vh;
+      var progress = total > 0 ? (-rect.top) / total : 0;
+      progress = Math.max(0, Math.min(1, progress));
+      var year = 1990 + progress * 35;
+      yearReadout.textContent = Math.round(year);
+      chart1.update(year, activeSlug, null);
+      ticking = false;
+    });
+  }
+  window.addEventListener("scroll", onScroll, {passive:true});
+  window.addEventListener("resize", onScroll);
+
+  var activeSlug = null;
+  var stepEls = Array.prototype.slice.call(document.querySelectorAll(".step"));
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      entry.target.classList.toggle("active", entry.isIntersecting);
+      if(entry.isIntersecting){
+        activeSlug = entry.target.dataset.slug;
+        document.getElementById("scroll-cue").style.display = "none";
+      }
+    });
+  }, {rootMargin: "-45% 0px -45% 0px", threshold: 0});
+  stepEls.forEach(function(el){ io.observe(el); });
+
+  onScroll();
+
+  // ---------------- explore chart ----------------
+  var chart2 = buildChart("#chart2", {labels:true, trails:false, showAll:true});
+  var exploreRegion = null;
+  buildLegend(document.getElementById("legend2"), function(region){ exploreRegion = region; chart2.update(+slider.value, null, exploreRegion); });
+  var slider = document.getElementById("year-slider");
+  var readout2 = document.getElementById("year-readout2");
+  chart2.update(1990, null, null);
+
+  function setYear(y){
+    slider.value = y;
+    readout2.textContent = Math.round(y);
+    chart2.update(y, null, exploreRegion);
+  }
+  slider.addEventListener("input", function(){ pausePlay(); setYear(+slider.value); });
+
+  var playBtn = document.getElementById("play-btn");
+  var playTimer = null;
+  function pausePlay(){
+    if(playTimer){ clearInterval(playTimer); playTimer = null; playBtn.innerHTML = "&#9654; Play"; }
+  }
+  playBtn.addEventListener("click", function(){
+    if(playTimer){ pausePlay(); return; }
+    if(+slider.value >= 2025) setYear(1990);
+    playBtn.innerHTML = "&#10074;&#10074; Pause";
+    playTimer = setInterval(function(){
+      var y = +slider.value + 0.5;
+      if(y >= 2025){ setYear(2025); pausePlay(); return; }
+      setYear(y);
+    }, 60);
+  });
+}
+})();
+</script>

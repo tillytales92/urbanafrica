@@ -2,7 +2,16 @@
 /data/
 
 # ---- Generated outputs -----------------------------------------------------
-/output/
+# /output/* (not /output/) so the negation below can still reach into the dir --
+# git can't re-include a path whose parent directory itself is excluded.
+/output/*
+# ...except hand-written report sources (the .qmd is source; its rendered
+# .html/_files are generated and stay ignored by the rule above).
+!/output/*.qmd
+# ...and the hand-written scrollytelling HTML (urban_growth_story.html is
+# source like the .qmd, not a render; its *_data.json is a generated export
+# from export_bubble_story_data.R and stays ignored).
+!/output/urban_growth_story.html
 Rplots.pdf
 Rplot.jpeg
 
