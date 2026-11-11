@@ -226,7 +226,9 @@ function showTip(evt, d, year){
 function hideTip(){ tooltip.style.opacity = 0; }
 
 try{
-  var RAW = JSON.parse(document.getElementById("raw-data").textContent);
+  var rawText = document.getElementById("raw-data").textContent
+    .replace("<!--DATA:START-->", "").replace("<!--DATA:END-->", "");
+  var RAW = JSON.parse(rawText);
   init(RAW);
 }catch(err){
   document.getElementById("scrolly").innerHTML =
